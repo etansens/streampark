@@ -65,6 +65,7 @@ curl -L https://streampark.apache.org/quickstart.sh | sh
 more:
  - [Start with Docker](docker/README.md)
  - [Start with Kubernetes](helm/README.md)
+ - [Flink Task Lifecycle OpenAPI](streampark-console/OPENAPI_FLINK_TASK_LIFECYCLE.md)
  - [Official Documentation](https://streampark.apache.org/docs/framework/quick-start)
 
 ## 🔨 How to Build
