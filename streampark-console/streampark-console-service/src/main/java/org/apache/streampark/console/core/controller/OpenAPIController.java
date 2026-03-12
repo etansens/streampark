@@ -46,6 +46,97 @@ public class OpenAPIController {
   @Autowired private ApplicationService applicationService;
 
   @OpenAPI(
+      name = "flinkCreate",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "teamId",
+            description = "current team id",
+            required = true,
+            type = Long.class,
+            bindFor = "teamId"),
+        @OpenAPI.Param(
+            name = "jobName",
+            description = "flink application name",
+            required = true,
+            type = String.class,
+            bindFor = "jobName"),
+        @OpenAPI.Param(
+            name = "appType",
+            description = "application type",
+            required = true,
+            type = Integer.class,
+            bindFor = "appType"),
+        @OpenAPI.Param(
+            name = "jobType",
+            description = "job type (1: custom code, 2: flink sql)",
+            required = true,
+            type = Integer.class,
+            bindFor = "jobType"),
+        @OpenAPI.Param(
+            name = "executionMode",
+            description = "flink execution mode",
+            required = true,
+            type = Integer.class,
+            bindFor = "executionMode"),
+        @OpenAPI.Param(
+            name = "projectId",
+            description = "project id",
+            required = false,
+            type = Long.class,
+            bindFor = "projectId"),
+        @OpenAPI.Param(
+            name = "description",
+            description = "application description",
+            required = false,
+            type = String.class,
+            bindFor = "description"),
+      })
+  @PermissionScope(team = "#app.teamId")
+  @PostMapping("app/create")
+  @RequiresPermissions("app:create")
+  public RestResponse flinkCreate(Application app) throws Exception {
+    boolean created = applicationService.create(app);
+    return RestResponse.success(created).data("id", app.getId());
+  }
+
+  @OpenAPI(
+      name = "flinkBuild",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class,
+            bindFor = "appId"),
+        @OpenAPI.Param(
+            name = "forceBuild",
+            description = "forced start pipeline or not",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false")
+      })
+  @PermissionScope(app = "#appId")
+  @PostMapping("app/build")
+  @RequiresPermissions("app:create")
+  public RestResponse flinkBuild(Long appId, boolean forceBuild) throws Exception {
+    return applicationService.buildApplication(appId, forceBuild);
+  }
+
+  @OpenAPI(
       name = "flinkStart",
       header = {
         @OpenAPI.Param(
@@ -134,6 +225,31 @@ public class OpenAPIController {
   @RequiresPermissions("app:cancel")
   public RestResponse flinkCancel(Application app) throws Exception {
     applicationService.cancel(app);
+    return RestResponse.success();
+  }
+
+  @OpenAPI(
+      name = "flinkRestart",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class,
+            bindFor = "id")
+      })
+  @PermissionScope(app = "#app.id")
+  @PostMapping("app/restart")
+  @RequiresPermissions("app:start")
+  public RestResponse flinkRestart(Application app) throws Exception {
+    applicationService.restart(app);
     return RestResponse.success();
   }
 
