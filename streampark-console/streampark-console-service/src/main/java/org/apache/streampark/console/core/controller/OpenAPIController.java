@@ -18,12 +18,17 @@
 package org.apache.streampark.console.core.controller;
 
 import org.apache.streampark.console.base.domain.RestResponse;
+import org.apache.streampark.console.core.annotation.AppUpdated;
 import org.apache.streampark.console.core.annotation.OpenAPI;
 import org.apache.streampark.console.core.annotation.PermissionScope;
 import org.apache.streampark.console.core.bean.OpenAPISchema;
 import org.apache.streampark.console.core.component.OpenAPIComponent;
+import org.apache.streampark.console.core.entity.AppBuildPipeline;
 import org.apache.streampark.console.core.entity.Application;
+import org.apache.streampark.console.core.entity.Savepoint;
+import org.apache.streampark.console.core.service.AppBuildPipeService;
 import org.apache.streampark.console.core.service.ApplicationService;
+import org.apache.streampark.console.core.service.SavepointService;
 
 import org.apache.shiro.authz.annotation.RequiresPermissions;
 
@@ -36,14 +41,284 @@ import org.springframework.web.bind.annotation.RestController;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
 @Validated
 @RestController
 @RequestMapping("openapi")
 public class OpenAPIController {
 
+  private static final long DEFAULT_RESTART_TIMEOUT_MINUTES = 60L;
+  private static final long RESTART_CHECK_INTERVAL_SECONDS = 5L;
+
   @Autowired private OpenAPIComponent openAPIComponent;
 
   @Autowired private ApplicationService applicationService;
+
+  @Autowired private AppBuildPipeService appBuildPipeService;
+
+  @Autowired private SavepointService savepointService;
+
+  @OpenAPI(
+      name = "flinkGet",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class)
+      })
+  @PermissionScope(app = "#app.id")
+  @PostMapping("app/get")
+  @RequiresPermissions("app:detail")
+  public RestResponse flinkGet(Application app) {
+    return RestResponse.success(applicationService.getApp(app));
+  }
+
+  @OpenAPI(
+      name = "flinkCopy",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "source flink application id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "jobName",
+            description = "new flink application name",
+            required = true,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "teamId",
+            description = "team id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "argument",
+            description = "optional copied app run argument override",
+            required = false,
+            type = String.class,
+            bindFor = "args")
+      })
+  @PermissionScope(app = "#app.id", team = "#app.teamId")
+  @PostMapping("app/copy")
+  @RequiresPermissions("app:copy")
+  public RestResponse flinkCopy(Application app) throws IOException {
+    Long id = applicationService.copy(app);
+    Map<String, String> data = new HashMap<>();
+    data.put("id", Long.toString(id));
+    return id.equals(0L)
+        ? RestResponse.success(false).data(data)
+        : RestResponse.success(true).data(data);
+  }
+
+  @OpenAPI(
+      name = "flinkCreate",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "teamId",
+            description = "team id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "jobName",
+            description = "flink application name",
+            required = true,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "jobType",
+            description = "1 custom code, 2 flink sql",
+            required = true,
+            type = Integer.class),
+        @OpenAPI.Param(
+            name = "executionMode",
+            description = "flink execution mode",
+            required = true,
+            type = Integer.class),
+        @OpenAPI.Param(
+            name = "versionId",
+            description = "flink version id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "appType",
+            description = "1 StreamPark Flink, 2 Apache Flink",
+            required = true,
+            type = Integer.class),
+        @OpenAPI.Param(
+            name = "resourceFrom",
+            description = "1 CICD, 2 jar in image",
+            required = false,
+            type = Integer.class),
+        @OpenAPI.Param(
+            name = "flinkSql",
+            description = "flink sql content when jobType is 2",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "jar",
+            description = "application jar name or path in image",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "mainClass",
+            description = "application main class",
+            required = false,
+            type = String.class)
+      })
+  @PermissionScope(team = "#app.teamId")
+  @PostMapping("app/create")
+  @RequiresPermissions("app:create")
+  public RestResponse flinkCreate(Application app) throws IOException {
+    boolean saved = applicationService.create(app);
+    Map<String, Object> data = new HashMap<>();
+    data.put("success", saved);
+    data.put("id", app.getId());
+    return RestResponse.success(data);
+  }
+
+  @OpenAPI(
+      name = "flinkUpdate",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "jobName",
+            description = "flink application name",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "flinkSql",
+            description = "flink sql content",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "args",
+            description = "program args",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "mainClass",
+            description = "application main class",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "dynamicProperties",
+            description = "flink dynamic properties",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "k8sPodTemplate",
+            description = "kubernetes pod template",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "k8sJmPodTemplate",
+            description = "kubernetes jobmanager pod template",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "k8sTmPodTemplate",
+            description = "kubernetes taskmanager pod template",
+            required = false,
+            type = String.class)
+      })
+  @AppUpdated
+  @PermissionScope(app = "#app.id", team = "#app.teamId")
+  @PostMapping("app/update")
+  @RequiresPermissions("app:update")
+  public RestResponse flinkUpdate(Application app) {
+    applicationService.update(app);
+    return RestResponse.success(true);
+  }
+
+  @OpenAPI(
+      name = "flinkBuild",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "forceBuild",
+            description = "force start build pipeline",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false")
+      })
+  @PermissionScope(app = "#id")
+  @PostMapping("app/build")
+  @RequiresPermissions("app:create")
+  public RestResponse flinkBuild(@NotNull Long id, boolean forceBuild) throws Exception {
+    return applicationService.buildApplication(id, forceBuild);
+  }
+
+  @OpenAPI(
+      name = "flinkBuildStatus",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class)
+      })
+  @PermissionScope(app = "#id")
+  @PostMapping("app/build/status")
+  @RequiresPermissions("app:view")
+  public RestResponse flinkBuildStatus(@NotNull Long id) {
+    Optional<AppBuildPipeline> pipeline = appBuildPipeService.getCurrentBuildPipeline(id);
+    return RestResponse.success(pipeline.map(AppBuildPipeline::toView).orElse(null));
+  }
 
   @OpenAPI(
       name = "flinkStart",
@@ -60,7 +335,7 @@ public class OpenAPIController {
             description = "current flink application id",
             required = true,
             type = Long.class,
-            bindFor = "appId"),
+            bindFor = "id"),
         @OpenAPI.Param(
             name = "argument",
             description = "flink program run argument",
@@ -86,7 +361,7 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false"),
       })
-  @PermissionScope(app = "#app.appId")
+  @PermissionScope(app = "#app.id")
   @PostMapping("app/start")
   @RequiresPermissions("app:start")
   public RestResponse flinkStart(Application app) throws Exception {
@@ -109,7 +384,7 @@ public class OpenAPIController {
             description = "current flink application id",
             required = true,
             type = Long.class,
-            bindFor = "appId"),
+            bindFor = "id"),
         @OpenAPI.Param(
             name = "triggerSavepoint",
             description = "trigger savepoint before taking stopping",
@@ -129,12 +404,120 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false"),
       })
-  @PermissionScope(app = "#app.appId")
+  @PermissionScope(app = "#app.id")
   @PostMapping("app/cancel")
   @RequiresPermissions("app:cancel")
   public RestResponse flinkCancel(Application app) throws Exception {
     applicationService.cancel(app);
     return RestResponse.success();
+  }
+
+  @OpenAPI(
+      name = "flinkRestart",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "triggerSavepoint",
+            description = "trigger savepoint before restarting",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false",
+            bindFor = "restoreOrTriggerSavepoint"),
+        @OpenAPI.Param(
+            name = "restoreFromSavepoint",
+            description = "restore restarted app from latest or given savepoint/checkpoint",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false"),
+        @OpenAPI.Param(
+            name = "savepointPath",
+            description = "savepoint or checkpoint path",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "allowNonRestored",
+            description = "ignore savepoint state if cannot be restored",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false"),
+        @OpenAPI.Param(
+            name = "drain",
+            description = "send max watermark before canceling",
+            required = false,
+            type = Boolean.class,
+            defaultValue = "false")
+      })
+  @PermissionScope(app = "#app.id")
+  @PostMapping("app/restart")
+  @RequiresPermissions({"app:start", "app:cancel"})
+  public RestResponse flinkRestart(Application app, RestartOptions options) throws Exception {
+    restart(app, options.getRestoreFromSavepoint());
+    return RestResponse.success(true);
+  }
+
+  @OpenAPI(
+      name = "flinkSavepointTrigger",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class),
+        @OpenAPI.Param(
+            name = "savepointPath",
+            description = "savepoint path",
+            required = false,
+            type = String.class)
+      })
+  @PermissionScope(app = "#id")
+  @PostMapping("app/savepoint/trigger")
+  @RequiresPermissions("savepoint:trigger")
+  public RestResponse flinkSavepointTrigger(@NotNull Long id, String savepointPath)
+      throws Exception {
+    savepointService.trigger(id, savepointPath);
+    return RestResponse.success(true);
+  }
+
+  @OpenAPI(
+      name = "flinkSavepointLatest",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "id",
+            description = "current flink application id",
+            required = true,
+            type = Long.class)
+      })
+  @PermissionScope(app = "#id")
+  @PostMapping("app/savepoint/latest")
+  @RequiresPermissions("app:view")
+  public RestResponse flinkSavepointLatest(@NotNull Long id) {
+    Savepoint savepoint = savepointService.getLatest(id);
+    return RestResponse.success(savepoint);
   }
 
   @PostMapping("curl")
@@ -148,5 +531,51 @@ public class OpenAPIController {
   public RestResponse schema(@NotBlank(message = "{required}") String name) {
     OpenAPISchema openAPISchema = openAPIComponent.getOpenAPISchema(name);
     return RestResponse.success(openAPISchema);
+  }
+
+  private void restart(Application app, Boolean restoreFromSavepoint) throws Exception {
+    Long appId = app.getId();
+    applicationService.cancel(app);
+    waitUntilCanStart(appId, app.getSavepointTimeout());
+
+    Application startParam = new Application();
+    startParam.setId(appId);
+    boolean restore =
+        restoreFromSavepoint == null
+            ? Boolean.TRUE.equals(app.getRestoreOrTriggerSavepoint())
+            : restoreFromSavepoint;
+    startParam.setRestoreOrTriggerSavepoint(restore);
+    startParam.setAllowNonRestored(Boolean.TRUE.equals(app.getAllowNonRestored()));
+    if (!Boolean.TRUE.equals(app.getRestoreOrTriggerSavepoint())) {
+      startParam.setSavepointPath(app.getSavepointPath());
+    }
+    applicationService.start(startParam, false);
+  }
+
+  private void waitUntilCanStart(Long appId, Long timeoutMinutes) throws InterruptedException {
+    long timeout = timeoutMinutes == null ? DEFAULT_RESTART_TIMEOUT_MINUTES : timeoutMinutes;
+    long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(timeout);
+    while (System.currentTimeMillis() < deadline) {
+      Application application = applicationService.getById(appId);
+      if (application != null && application.isCanBeStart()) {
+        return;
+      }
+      TimeUnit.SECONDS.sleep(RESTART_CHECK_INTERVAL_SECONDS);
+    }
+    throw new IllegalStateException(
+        String.format("Timed out waiting application %s to stop before restart", appId));
+  }
+
+  public static class RestartOptions {
+
+    private Boolean restoreFromSavepoint;
+
+    public Boolean getRestoreFromSavepoint() {
+      return restoreFromSavepoint;
+    }
+
+    public void setRestoreFromSavepoint(Boolean restoreFromSavepoint) {
+      this.restoreFromSavepoint = restoreFromSavepoint;
+    }
   }
 }

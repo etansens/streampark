@@ -120,6 +120,10 @@ export default {
     apiTitle: 'Api Detail',
     resetApiToolTip:
       'Rest API external call interface,other third-party systems easy to access StreamPark',
+    copyGetcURL: 'App Get',
+    copyCopycURL: 'App Copy',
+    copyUpdatecURL: 'App Update',
+    copyBuildcURL: 'App Build',
     copyStartcURL: 'App Start',
     copyCancelcURL: 'App Cancel',
     apiDocCenter: 'Api Doc Center',

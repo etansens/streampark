@@ -55,6 +55,13 @@ public class SavepointController {
     return RestResponse.success(page);
   }
 
+  @PostMapping("latest")
+  @PermissionScope(app = "#sp.appId", team = "#sp.teamId")
+  public RestResponse latest(Savepoint sp) {
+    Savepoint savepoint = savepointService.getLatest(sp.getAppId());
+    return RestResponse.success(savepoint);
+  }
+
   @PostMapping("delete")
   @RequiresPermissions("savepoint:delete")
   @PermissionScope(app = "#sp.appId", team = "#sp.teamId")

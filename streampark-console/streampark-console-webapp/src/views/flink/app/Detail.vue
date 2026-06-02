@@ -54,6 +54,14 @@
   const yarn = ref('');
   const externalLinks = ref<ExternalLink[]>([]);
   const app = reactive<Partial<AppListRecord>>({});
+  const openApiActions = [
+    { name: 'flinkGet', label: 'flink.app.detail.copyGetcURL' },
+    { name: 'flinkCopy', label: 'flink.app.detail.copyCopycURL' },
+    { name: 'flinkUpdate', label: 'flink.app.detail.copyUpdatecURL' },
+    { name: 'flinkBuild', label: 'flink.app.detail.copyBuildcURL' },
+    { name: 'flinkStart', label: 'flink.app.detail.copyStartcURL' },
+    { name: 'flinkCancel', label: 'flink.app.detail.copyCancelcURL' },
+  ];
   const detailTabs = reactive({
     showConf: false,
     showSaveOption: false,
@@ -74,37 +82,23 @@
             h(Icon, { icon: 'ant-design:question-circle-outlined', class: 'pl-5px', color: 'red' }),
           ),
         ]),
-        render: () => [
-          h(
-            Button,
-            {
-              type: 'primary',
-              size: 'small',
-              class: 'mx-3px px-5px',
-              onClick: () =>
-                openApiModal(true, {
-                  name: 'flinkStart',
-                  app,
-                }),
-            },
-            () => [t('flink.app.detail.copyStartcURL')],
-          ),
-          h(
-            Button,
-            {
-              type: 'primary',
-              size: 'small',
-              class: 'mx-3px px-5px',
-              onClick: () => {
-                openApiModal(true, {
-                  name: 'flinkCancel',
-                  app,
-                });
+        render: () =>
+          openApiActions.map((action) =>
+            h(
+              Button,
+              {
+                type: 'primary',
+                size: 'small',
+                class: 'mx-3px px-5px mb-3px',
+                onClick: () =>
+                  openApiModal(true, {
+                    name: action.name,
+                    app,
+                  }),
               },
-            },
-            () => [t('flink.app.detail.copyCancelcURL')],
+              () => [t(action.label)],
+            ),
           ),
-        ],
       },
     ],
     data: app,

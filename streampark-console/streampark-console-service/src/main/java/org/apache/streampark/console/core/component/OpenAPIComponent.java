@@ -89,8 +89,10 @@ public class OpenAPIComponent {
         .forEach(
             c -> {
               if (c.isRequired()) {
-                if (c.getBindFor().equals("appId")) {
+                if (c.getBindFor().equals("appId") || c.getBindFor().equals("id")) {
                   curlBuilder.addFormData(c.getName(), appId);
+                } else if (c.getBindFor().equals("teamId")) {
+                  curlBuilder.addFormData(c.getName(), teamId);
                 }
               } else {
                 curlBuilder.addFormData(c.getName(), c.getDefaultValue());

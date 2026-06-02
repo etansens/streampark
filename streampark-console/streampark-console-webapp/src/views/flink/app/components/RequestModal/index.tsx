@@ -65,6 +65,7 @@ export default defineComponent({
           const res = await fetchCopyCurl({
             baseUrl: baseUrl(),
             appId: currentRef.value.app.id,
+            teamId: currentRef.value.app.teamId,
             name: currentRef.value.name,
           });
           await copy(res);
