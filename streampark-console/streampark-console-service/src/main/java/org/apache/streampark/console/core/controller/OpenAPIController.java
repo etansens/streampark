@@ -18,6 +18,7 @@
 package org.apache.streampark.console.core.controller;
 
 import org.apache.streampark.console.base.domain.RestResponse;
+import org.apache.streampark.console.base.exception.ApiAlertException;
 import org.apache.streampark.console.core.annotation.AppUpdated;
 import org.apache.streampark.console.core.annotation.OpenAPI;
 import org.apache.streampark.console.core.annotation.PermissionScope;
@@ -32,19 +33,28 @@ import org.apache.streampark.console.core.service.SavepointService;
 
 import org.apache.shiro.authz.annotation.RequiresPermissions;
 
+import org.springframework.beans.BeanWrapper;
+import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import javax.servlet.http.HttpServletRequest;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Validated
@@ -54,6 +64,43 @@ public class OpenAPIController {
 
   private static final long DEFAULT_RESTART_TIMEOUT_MINUTES = 60L;
   private static final long RESTART_CHECK_INTERVAL_SECONDS = 5L;
+  private static final Set<String> UPDATE_MERGE_FIELDS =
+      Collections.unmodifiableSet(
+          new HashSet<>(
+              Arrays.asList(
+                  "id",
+                  "jobName",
+                  "versionId",
+                  "args",
+                  "options",
+                  "dynamicProperties",
+                  "resolveOrder",
+                  "executionMode",
+                  "flinkImage",
+                  "k8sRestExposedType",
+                  "k8sPodTemplate",
+                  "k8sJmPodTemplate",
+                  "k8sTmPodTemplate",
+                  "k8sHadoopIntegration",
+                  "k8sNamespace",
+                  "serviceAccount",
+                  "flinkClusterId",
+                  "flinkSql",
+                  "sqlId",
+                  "dependency",
+                  "config",
+                  "configId",
+                  "format",
+                  "description",
+                  "alertId",
+                  "restartSize",
+                  "cpFailureAction",
+                  "cpFailureRateInterval",
+                  "cpMaxFailureInterval",
+                  "tags",
+                  "jar",
+                  "mainClass",
+                  "yarnQueue")));
 
   @Autowired private OpenAPIComponent openAPIComponent;
 
@@ -259,12 +306,47 @@ public class OpenAPIController {
             type = String.class)
       })
   @AppUpdated
-  @PermissionScope(app = "#app.id", team = "#app.teamId")
+  @PermissionScope(app = "#app.id")
   @PostMapping("app/update")
   @RequiresPermissions("app:update")
-  public RestResponse flinkUpdate(Application app) {
-    applicationService.update(app);
+  public RestResponse flinkUpdate(Application app, HttpServletRequest request) {
+    Application merged = mergeUpdateApplication(app, request);
+    applicationService.update(merged);
     return RestResponse.success(true);
+  }
+
+  private Application mergeUpdateApplication(Application app, HttpServletRequest request) {
+    Application query = new Application();
+    query.setId(app.getId());
+    Application merged = applicationService.getApp(query);
+    ApiAlertException.throwIfNull(
+        merged, String.format("The application id=%s not found, update failed.", app.getId()));
+
+    merged.setFlinkSql(decodeBase64(merged.getFlinkSql()));
+    merged.setConfig(decodeBase64(merged.getConfig()));
+
+    BeanWrapper source = new BeanWrapperImpl(app);
+    BeanWrapper target = new BeanWrapperImpl(merged);
+    for (String parameterName : request.getParameterMap().keySet()) {
+      String propertyName = "argument".equals(parameterName) ? "args" : parameterName;
+      if (UPDATE_MERGE_FIELDS.contains(propertyName)
+          && source.isReadableProperty(propertyName)
+          && target.isWritableProperty(propertyName)) {
+        target.setPropertyValue(propertyName, source.getPropertyValue(propertyName));
+      }
+    }
+    return merged;
+  }
+
+  private String decodeBase64(String value) {
+    if (value == null) {
+      return null;
+    }
+    try {
+      return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException e) {
+      return value;
+    }
   }
 
   @OpenAPI(

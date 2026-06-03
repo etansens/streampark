@@ -93,7 +93,6 @@ curl -X POST "${BASE_URL}/openapi/app/update" \
   -H "Authorization: ${TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "teamId=${TEAM_ID}" \
   --data-urlencode "jobName=${COPY_JOB_NAME}" \
   --data-urlencode "executionMode=4" \
   --data-urlencode "versionId=${VERSION_ID}" \
@@ -108,7 +107,7 @@ curl -X POST "${BASE_URL}/openapi/app/update" \
   --data-urlencode "restartSize=3"
 ```
 
-检查点：响应中 `status=success`。更新接口建议传完整任务配置，避免未传字段被置空。再次调用 TC-001 时，应能看到 SQL 变更已保存；如需比对 SQL 内容，先按接口返回格式处理 Base64 编码。
+检查点：响应中 `status=success`。更新接口支持局部更新，未传字段应保持原值；如果显式传入空字符串，则该字段应被清空。再次调用 TC-001 时，应能看到 SQL 变更已保存；如需比对 SQL 内容，先按接口返回格式处理 Base64 编码。
 
 ### TC-004 更新 Program Args 和 Kubernetes Pod Template
 
@@ -117,7 +116,6 @@ curl -X POST "${BASE_URL}/openapi/app/update" \
   -H "Authorization: ${TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "teamId=${TEAM_ID}" \
   --data-urlencode "jobName=${COPY_JOB_NAME}" \
   --data-urlencode "executionMode=4" \
   --data-urlencode "versionId=${VERSION_ID}" \
@@ -292,7 +290,6 @@ const appId = copied.id;
 
 await post('/openapi/app/update', {
   id: appId,
-  teamId: process.env.TEAM_ID,
   jobName: process.env.COPY_JOB_NAME,
   executionMode: '4',
   versionId: process.env.VERSION_ID,

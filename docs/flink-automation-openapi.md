@@ -218,16 +218,16 @@ curl -X POST "${BASE_URL}/openapi/app/create" \
 
 `POST /openapi/app/update`
 
-当前更新接口复用控制台 `ApplicationService.update()`，建议传完整任务配置，不建议只传局部字段，避免未传字段被置空。
+当前更新接口支持局部更新：服务端会先读取现有任务配置，再只用请求中显式传入的字段覆盖。未传字段保持原值；如果显式传入空字符串，则会覆盖为空，用于清空原配置。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `id` | 是 | Flink App ID |
-| `jobName` | 建议 | 任务名称 |
-| `executionMode` | 建议 | 执行模式 |
-| `versionId` | 建议 | Flink 版本 ID |
+| `jobName` | 否 | 任务名称 |
+| `executionMode` | 否 | 执行模式 |
+| `versionId` | 否 | Flink 版本 ID |
 | `flinkSql` | SQL 任务 | SQL 内容 |
-| `sqlId` | SQL 任务建议 | 当前 SQL 版本 ID |
+| `sqlId` | 否 | 当前 SQL 版本 ID；未修改 SQL 时可不传 |
 | `mainClass` | Jar 任务 | 主类 |
 | `args` | 否 | Program Args |
 | `dependency` | 否 | 依赖 JSON 字符串 |
@@ -243,7 +243,6 @@ curl -X POST "${BASE_URL}/openapi/app/update" \
   -H "Authorization: ${TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "teamId=${TEAM_ID}" \
   --data-urlencode "jobName=demo-sql-job" \
   --data-urlencode "executionMode=4" \
   --data-urlencode "versionId=${VERSION_ID}" \
@@ -510,7 +509,7 @@ curl -s -X POST "${BASE_URL}/openapi/app/build/status" \
 
 创建和更新接口当前复用 StreamPark Console 原有 `Application` 参数绑定，参数是表单字段，不是 JSON。
 
-更新接口建议传完整配置。只传局部字段可能导致原有字段被置空。
+更新接口支持局部更新。未传字段保持原值；显式传入空字符串会清空对应字段。
 
 `build` 成功表示构建流程已提交或不需要构建；实际部署进度建议轮询 `build/status` 和 `app/get`。
 

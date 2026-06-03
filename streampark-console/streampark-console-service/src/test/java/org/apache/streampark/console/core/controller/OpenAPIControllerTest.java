@@ -35,6 +35,11 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import javax.servlet.http.HttpServletRequest;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -54,6 +59,8 @@ class OpenAPIControllerTest {
   @Mock private AppBuildPipeService appBuildPipeService;
 
   @Mock private SavepointService savepointService;
+
+  @Mock private HttpServletRequest httpServletRequest;
 
   @InjectMocks private OpenAPIController openAPIController;
 
@@ -117,23 +124,108 @@ class OpenAPIControllerTest {
   }
 
   @Test
-  void flinkUpdateDelegatesToApplicationService() {
+  void flinkUpdateMergesExplicitArgsAndPreservesMissingFields() {
     Application request = new Application();
     request.setId(400L);
-    request.setJobName("updated-job");
+    request.setArgs("--new-args");
 
-    RestResponse response = openAPIController.flinkUpdate(request);
+    Application existing = new Application();
+    existing.setId(400L);
+    existing.setTeamId(100000L);
+    existing.setJobName("existing-job");
+    existing.setExecutionMode(6);
+    existing.setVersionId(10000L);
+    existing.setArgs("--old-args");
+    existing.setDynamicProperties("-Dparallelism.default=2");
+    existing.setOptions("{}");
+    existing.setK8sPodTemplate("pod-template-yaml");
+    existing.setFlinkSql(
+        Base64.getEncoder().encodeToString("SELECT 1".getBytes(StandardCharsets.UTF_8)));
+    when(applicationService.getApp(org.mockito.ArgumentMatchers.any(Application.class)))
+        .thenReturn(existing);
+    when(httpServletRequest.getParameterMap())
+        .thenReturn(parameterMap("id", "400", "args", "--new-args"));
+
+    RestResponse response = openAPIController.flinkUpdate(request, httpServletRequest);
 
     Assertions.assertEquals(RestResponse.STATUS_SUCCESS, response.get("status"));
     Assertions.assertEquals(Boolean.TRUE, response.get("data"));
-    verify(applicationService).update(request);
+
+    ArgumentCaptor<Application> updateCaptor = ArgumentCaptor.forClass(Application.class);
+    verify(applicationService).update(updateCaptor.capture());
+    Application merged = updateCaptor.getValue();
+    Assertions.assertEquals(400L, merged.getId());
+    Assertions.assertEquals(100000L, merged.getTeamId());
+    Assertions.assertEquals("existing-job", merged.getJobName());
+    Assertions.assertEquals(6, merged.getExecutionMode());
+    Assertions.assertEquals(10000L, merged.getVersionId());
+    Assertions.assertEquals("--new-args", merged.getArgs());
+    Assertions.assertEquals("-Dparallelism.default=2", merged.getDynamicProperties());
+    Assertions.assertEquals("{}", merged.getOptions());
+    Assertions.assertEquals("pod-template-yaml", merged.getK8sPodTemplate());
+    Assertions.assertEquals("SELECT 1", merged.getFlinkSql());
+  }
+
+  @Test
+  void flinkUpdateClearsExplicitEmptyFields() {
+    Application request = new Application();
+    request.setId(401L);
+    request.setDynamicProperties("");
+    request.setOptions("");
+
+    Application existing = new Application();
+    existing.setId(401L);
+    existing.setDynamicProperties("-Dparallelism.default=2");
+    existing.setOptions("{}");
+    when(applicationService.getApp(org.mockito.ArgumentMatchers.any(Application.class)))
+        .thenReturn(existing);
+    when(httpServletRequest.getParameterMap())
+        .thenReturn(parameterMap("id", "401", "dynamicProperties", "", "options", ""));
+
+    RestResponse response = openAPIController.flinkUpdate(request, httpServletRequest);
+
+    Assertions.assertEquals(RestResponse.STATUS_SUCCESS, response.get("status"));
+    Assertions.assertEquals(Boolean.TRUE, response.get("data"));
+
+    ArgumentCaptor<Application> updateCaptor = ArgumentCaptor.forClass(Application.class);
+    verify(applicationService).update(updateCaptor.capture());
+    Application merged = updateCaptor.getValue();
+    Assertions.assertEquals("", merged.getDynamicProperties());
+    Assertions.assertEquals("", merged.getOptions());
+  }
+
+  @Test
+  void flinkUpdateIgnoresExplicitTeamId() {
+    Application request = new Application();
+    request.setId(402L);
+    request.setTeamId(999999L);
+    request.setArgs("--new-args");
+
+    Application existing = new Application();
+    existing.setId(402L);
+    existing.setTeamId(100000L);
+    existing.setArgs("--old-args");
+    when(applicationService.getApp(org.mockito.ArgumentMatchers.any(Application.class)))
+        .thenReturn(existing);
+    when(httpServletRequest.getParameterMap())
+        .thenReturn(parameterMap("id", "402", "teamId", "999999", "args", "--new-args"));
+
+    RestResponse response = openAPIController.flinkUpdate(request, httpServletRequest);
+
+    Assertions.assertEquals(RestResponse.STATUS_SUCCESS, response.get("status"));
+
+    ArgumentCaptor<Application> updateCaptor = ArgumentCaptor.forClass(Application.class);
+    verify(applicationService).update(updateCaptor.capture());
+    Application merged = updateCaptor.getValue();
+    Assertions.assertEquals(100000L, merged.getTeamId());
+    Assertions.assertEquals("--new-args", merged.getArgs());
   }
 
   @Test
   void flinkUpdateSchemaIncludesArgsAndKubernetesPodTemplatesWithoutJar() throws Exception {
     OpenAPI openAPI =
         OpenAPIController.class
-            .getDeclaredMethod("flinkUpdate", Application.class)
+            .getDeclaredMethod("flinkUpdate", Application.class, HttpServletRequest.class)
             .getDeclaredAnnotation(OpenAPI.class);
 
     Set<String> paramNames =
@@ -144,6 +236,14 @@ class OpenAPIControllerTest {
     Assertions.assertTrue(paramNames.contains("k8sJmPodTemplate"));
     Assertions.assertTrue(paramNames.contains("k8sTmPodTemplate"));
     Assertions.assertFalse(paramNames.contains("jar"));
+  }
+
+  private Map<String, String[]> parameterMap(String... values) {
+    Map<String, String[]> parameters = new HashMap<>();
+    for (int i = 0; i < values.length; i += 2) {
+      parameters.put(values[i], new String[] {values[i + 1]});
+    }
+    return parameters;
   }
 
   @Test
