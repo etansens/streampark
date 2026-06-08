@@ -21,7 +21,6 @@ import org.apache.streampark.console.base.domain.RestResponse;
 import org.apache.streampark.console.base.exception.ApiAlertException;
 import org.apache.streampark.console.core.annotation.AppUpdated;
 import org.apache.streampark.console.core.annotation.OpenAPI;
-import org.apache.streampark.console.core.annotation.PermissionScope;
 import org.apache.streampark.console.core.bean.OpenAPISchema;
 import org.apache.streampark.console.core.component.OpenAPIComponent;
 import org.apache.streampark.console.core.entity.AppBuildPipeline;
@@ -30,9 +29,12 @@ import org.apache.streampark.console.core.entity.Savepoint;
 import org.apache.streampark.console.core.service.AppBuildPipeService;
 import org.apache.streampark.console.core.service.ApplicationService;
 import org.apache.streampark.console.core.service.SavepointService;
+import org.apache.streampark.flink.packer.pipeline.PipelineStatus;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.shiro.authz.annotation.RequiresPermissions;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.beans.BeanWrapper;
 import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +54,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -70,37 +73,12 @@ public class OpenAPIController {
               Arrays.asList(
                   "id",
                   "jobName",
-                  "versionId",
-                  "args",
-                  "options",
-                  "dynamicProperties",
-                  "resolveOrder",
-                  "executionMode",
-                  "flinkImage",
-                  "k8sRestExposedType",
-                  "k8sPodTemplate",
-                  "k8sJmPodTemplate",
-                  "k8sTmPodTemplate",
-                  "k8sHadoopIntegration",
-                  "k8sNamespace",
-                  "serviceAccount",
-                  "flinkClusterId",
-                  "flinkSql",
-                  "sqlId",
-                  "dependency",
-                  "config",
-                  "configId",
-                  "format",
-                  "description",
-                  "alertId",
-                  "restartSize",
-                  "cpFailureAction",
-                  "cpFailureRateInterval",
-                  "cpMaxFailureInterval",
-                  "tags",
-                  "jar",
                   "mainClass",
-                  "yarnQueue")));
+                  "flinkSql",
+                  "args",
+                  "dynamicProperties",
+                  "flinkImage",
+                  "k8sPodTemplate")));
 
   @Autowired private OpenAPIComponent openAPIComponent;
 
@@ -121,16 +99,15 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
+            name = "jobName",
+            description = "current flink application name",
             required = true,
-            type = Long.class)
+            type = String.class)
       })
-  @PermissionScope(app = "#app.id")
   @PostMapping("app/get")
   @RequiresPermissions("app:detail")
   public RestResponse flinkGet(Application app) {
-    return RestResponse.success(applicationService.getApp(app));
+    return RestResponse.success(getApplicationDetail(resolveAppByJobName(app.getJobName(), "get")));
   }
 
   @OpenAPI(
@@ -144,109 +121,26 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "source flink application id",
-            required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "jobName",
-            description = "new flink application name",
+            name = "srcJobName",
+            description = "source flink application name",
             required = true,
             type = String.class),
         @OpenAPI.Param(
-            name = "teamId",
-            description = "team id",
+            name = "dstJobName",
+            description = "new flink application name",
             required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "argument",
-            description = "optional copied app run argument override",
-            required = false,
-            type = String.class,
-            bindFor = "args")
+            type = String.class)
       })
-  @PermissionScope(app = "#app.id", team = "#app.teamId")
   @PostMapping("app/copy")
   @RequiresPermissions("app:copy")
-  public RestResponse flinkCopy(Application app) throws IOException {
+  public RestResponse flinkCopy(CopyRequest request) throws IOException {
+    Application app = toCopyApplication(request);
     Long id = applicationService.copy(app);
     Map<String, String> data = new HashMap<>();
     data.put("id", Long.toString(id));
     return id.equals(0L)
         ? RestResponse.success(false).data(data)
         : RestResponse.success(true).data(data);
-  }
-
-  @OpenAPI(
-      name = "flinkCreate",
-      header = {
-        @OpenAPI.Param(
-            name = "Authorization",
-            description = "Access authorization token",
-            required = true,
-            type = String.class)
-      },
-      param = {
-        @OpenAPI.Param(
-            name = "teamId",
-            description = "team id",
-            required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "jobName",
-            description = "flink application name",
-            required = true,
-            type = String.class),
-        @OpenAPI.Param(
-            name = "jobType",
-            description = "1 custom code, 2 flink sql",
-            required = true,
-            type = Integer.class),
-        @OpenAPI.Param(
-            name = "executionMode",
-            description = "flink execution mode",
-            required = true,
-            type = Integer.class),
-        @OpenAPI.Param(
-            name = "versionId",
-            description = "flink version id",
-            required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "appType",
-            description = "1 StreamPark Flink, 2 Apache Flink",
-            required = true,
-            type = Integer.class),
-        @OpenAPI.Param(
-            name = "resourceFrom",
-            description = "1 CICD, 2 jar in image",
-            required = false,
-            type = Integer.class),
-        @OpenAPI.Param(
-            name = "flinkSql",
-            description = "flink sql content when jobType is 2",
-            required = false,
-            type = String.class),
-        @OpenAPI.Param(
-            name = "jar",
-            description = "application jar name or path in image",
-            required = false,
-            type = String.class),
-        @OpenAPI.Param(
-            name = "mainClass",
-            description = "application main class",
-            required = false,
-            type = String.class)
-      })
-  @PermissionScope(team = "#app.teamId")
-  @PostMapping("app/create")
-  @RequiresPermissions("app:create")
-  public RestResponse flinkCreate(Application app) throws IOException {
-    boolean saved = applicationService.create(app);
-    Map<String, Object> data = new HashMap<>();
-    data.put("success", saved);
-    data.put("id", app.getId());
-    return RestResponse.success(data);
   }
 
   @OpenAPI(
@@ -260,14 +154,9 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
-            required = true,
-            type = Long.class),
-        @OpenAPI.Param(
             name = "jobName",
-            description = "flink application name",
-            required = false,
+            description = "current flink application name",
+            required = true,
             type = String.class),
         @OpenAPI.Param(
             name = "flinkSql",
@@ -290,29 +179,106 @@ public class OpenAPIController {
             required = false,
             type = String.class),
         @OpenAPI.Param(
+            name = "flinkImage",
+            description = "flink kubernetes base image",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "k8sPodTemplate",
+            description = "kubernetes pod template",
+            required = false,
+            type = String.class)
+      })
+  @AppUpdated
+  @PostMapping("app/update")
+  @RequiresPermissions("app:update")
+  public RestResponse flinkUpdate(Application app, HttpServletRequest request) {
+    app.setId(resolveAppByJobName(app.getJobName(), "update").getId());
+    Application merged = mergeUpdateApplication(app, request);
+    applicationService.update(merged);
+    return RestResponse.success(true);
+  }
+
+  @OpenAPI(
+      name = "flinkDeploy",
+      header = {
+        @OpenAPI.Param(
+            name = "Authorization",
+            description = "Access authorization token",
+            required = true,
+            type = String.class)
+      },
+      param = {
+        @OpenAPI.Param(
+            name = "srcJobName",
+            description = "source flink application name",
+            required = true,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "dstJobName",
+            description = "destination flink application name",
+            required = true,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "flinkSql",
+            description = "flink sql content",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "args",
+            description = "program args",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "mainClass",
+            description = "application main class",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "dynamicProperties",
+            description = "flink dynamic properties",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
+            name = "flinkImage",
+            description = "flink kubernetes base image",
+            required = false,
+            type = String.class),
+        @OpenAPI.Param(
             name = "k8sPodTemplate",
             description = "kubernetes pod template",
             required = false,
             type = String.class),
         @OpenAPI.Param(
-            name = "k8sJmPodTemplate",
-            description = "kubernetes jobmanager pod template",
+            name = "forceBuild",
+            description = "force start build pipeline",
             required = false,
-            type = String.class),
-        @OpenAPI.Param(
-            name = "k8sTmPodTemplate",
-            description = "kubernetes taskmanager pod template",
-            required = false,
-            type = String.class)
+            type = Boolean.class,
+            defaultValue = "false")
       })
-  @AppUpdated
-  @PermissionScope(app = "#app.id")
-  @PostMapping("app/update")
-  @RequiresPermissions("app:update")
-  public RestResponse flinkUpdate(Application app, HttpServletRequest request) {
-    Application merged = mergeUpdateApplication(app, request);
-    applicationService.update(merged);
-    return RestResponse.success(true);
+  @PostMapping("app/deploy")
+  @RequiresPermissions({"app:copy", "app:update", "app:create"})
+  public RestResponse flinkDeploy(DeployRequest deployRequest, HttpServletRequest request)
+      throws Exception {
+    Optional<Application> destination = findAppByJobName(deployRequest.getDstJobName(), "deploy");
+    if (destination.isPresent()) {
+      return RestResponse.success(deployResponse(deployRequest, destination.get(), false));
+    }
+
+    Application copyRequest = toCopyApplication(deployRequest);
+    Long appId = applicationService.copy(copyRequest);
+
+    Application updateRequest = deployRequest.toApplication();
+    updateRequest.setId(appId);
+    updateRequest.setJobName(deployRequest.getDstJobName());
+    applicationService.update(mergeUpdateApplication(updateRequest, request));
+
+    applicationService.buildApplication(appId, Boolean.TRUE.equals(deployRequest.getForceBuild()));
+
+    Application deployed = new Application();
+    deployed.setId(appId);
+    deployed.setJobName(deployRequest.getDstJobName());
+    return RestResponse.success(deployResponse(deployRequest, deployed, true));
   }
 
   private Application mergeUpdateApplication(Application app, HttpServletRequest request) {
@@ -320,7 +286,8 @@ public class OpenAPIController {
     query.setId(app.getId());
     Application merged = applicationService.getApp(query);
     ApiAlertException.throwIfNull(
-        merged, String.format("The application id=%s not found, update failed.", app.getId()));
+        merged,
+        String.format("The application jobName=%s not found, update failed.", app.getJobName()));
 
     merged.setFlinkSql(decodeBase64(merged.getFlinkSql()));
     merged.setConfig(decodeBase64(merged.getConfig()));
@@ -349,6 +316,56 @@ public class OpenAPIController {
     }
   }
 
+  private Application getApplicationDetail(Application resolved) {
+    Application query = new Application();
+    query.setId(resolved.getId());
+    return applicationService.getApp(query);
+  }
+
+  private Application resolveAppByJobName(String jobName, String action) {
+    return findAppByJobName(jobName, action)
+        .orElseThrow(
+            () ->
+                new ApiAlertException(
+                    String.format(
+                        "The application jobName=%s not found, %s failed.", jobName, action)));
+  }
+
+  private Optional<Application> findAppByJobName(String jobName, String action) {
+    ApiAlertException.throwIfTrue(StringUtils.isBlank(jobName), "The jobName is required.");
+    List<Application> applications =
+        applicationService.list(
+            Wrappers.<Application>lambdaQuery().eq(Application::getJobName, jobName));
+    if (applications == null || applications.isEmpty()) {
+      return Optional.empty();
+    }
+    ApiAlertException.throwIfTrue(
+        applications.size() > 1,
+        String.format("The application jobName=%s is ambiguous, %s failed.", jobName, action));
+    return Optional.of(applications.get(0));
+  }
+
+  private Application toCopyApplication(CopyRequest request) {
+    Application source = resolveAppByJobName(request.getSrcJobName(), "copy");
+    Application app = new Application();
+    app.setId(source.getId());
+    app.setTeamId(source.getTeamId());
+    app.setJobName(request.getDstJobName());
+    return app;
+  }
+
+  private Map<String, Object> deployResponse(
+      DeployRequest deployRequest, Application application, boolean buildSubmitted) {
+    Map<String, Object> data = new HashMap<>();
+    data.put("srcJobName", deployRequest.getSrcJobName());
+    data.put("dstJobName", deployRequest.getDstJobName());
+    data.put("appId", application.getId());
+    data.put("state", application.getState());
+    data.put("buildSubmitted", buildSubmitted);
+    data.put("message", buildSubmitted ? "Build submitted." : "Application already exists.");
+    return data;
+  }
+
   @OpenAPI(
       name = "flinkBuild",
       header = {
@@ -360,10 +377,10 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
+            name = "jobName",
+            description = "current flink application name",
             required = true,
-            type = Long.class),
+            type = String.class),
         @OpenAPI.Param(
             name = "forceBuild",
             description = "force start build pipeline",
@@ -371,35 +388,65 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false")
       })
-  @PermissionScope(app = "#id")
   @PostMapping("app/build")
   @RequiresPermissions("app:create")
-  public RestResponse flinkBuild(@NotNull Long id, boolean forceBuild) throws Exception {
-    return applicationService.buildApplication(id, forceBuild);
+  public RestResponse flinkBuild(@NotBlank String jobName, boolean forceBuild) throws Exception {
+    Application application = resolveAppByJobName(jobName, "build");
+    Optional<AppBuildPipeline> pipeline =
+        appBuildPipeService.getCurrentBuildPipeline(application.getId());
+    if (shouldSubmitBuild(application, pipeline, forceBuild)) {
+      applicationService.buildApplication(application.getId(), forceBuild);
+      pipeline = appBuildPipeService.getCurrentBuildPipeline(application.getId());
+    }
+    return RestResponse.success(buildResponse(application, pipeline));
   }
 
-  @OpenAPI(
-      name = "flinkBuildStatus",
-      header = {
-        @OpenAPI.Param(
-            name = "Authorization",
-            description = "Access authorization token",
-            required = true,
-            type = String.class)
-      },
-      param = {
-        @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
-            required = true,
-            type = Long.class)
-      })
-  @PermissionScope(app = "#id")
-  @PostMapping("app/build/status")
-  @RequiresPermissions("app:view")
-  public RestResponse flinkBuildStatus(@NotNull Long id) {
-    Optional<AppBuildPipeline> pipeline = appBuildPipeService.getCurrentBuildPipeline(id);
-    return RestResponse.success(pipeline.map(AppBuildPipeline::toView).orElse(null));
+  private boolean shouldSubmitBuild(
+      Application application, Optional<AppBuildPipeline> pipeline, boolean forceBuild) {
+    if (!pipeline.isPresent()) {
+      return true;
+    }
+    PipelineStatus status = pipeline.get().getPipelineStatus();
+    if (PipelineStatus.pending == status || PipelineStatus.running == status) {
+      return false;
+    }
+    return forceBuild
+        || (PipelineStatus.success == status && Boolean.TRUE.equals(application.getBuild()));
+  }
+
+  private Map<String, Object> buildResponse(
+      Application application, Optional<AppBuildPipeline> pipeline) {
+    String buildStatus = openApiBuildStatus(pipeline);
+    Map<String, Object> data = new HashMap<>();
+    data.put("jobName", application.getJobName());
+    data.put("appId", application.getId());
+    data.put("buildStatus", buildStatus);
+    data.put("message", buildStatusMessage(buildStatus));
+    return data;
+  }
+
+  private String openApiBuildStatus(Optional<AppBuildPipeline> pipeline) {
+    if (!pipeline.isPresent()) {
+      return "COMPLETED";
+    }
+    PipelineStatus status = pipeline.get().getPipelineStatus();
+    if (PipelineStatus.failure == status) {
+      return "FAILED";
+    }
+    if (PipelineStatus.success == status) {
+      return "COMPLETED";
+    }
+    return "BUILDING";
+  }
+
+  private String buildStatusMessage(String buildStatus) {
+    if ("FAILED".equals(buildStatus)) {
+      return "Build failed.";
+    }
+    if ("COMPLETED".equals(buildStatus)) {
+      return "Build completed.";
+    }
+    return "Build is running.";
   }
 
   @OpenAPI(
@@ -413,11 +460,10 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
+            name = "jobName",
+            description = "current flink application name",
             required = true,
-            type = Long.class,
-            bindFor = "id"),
+            type = String.class),
         @OpenAPI.Param(
             name = "argument",
             description = "flink program run argument",
@@ -425,17 +471,11 @@ public class OpenAPIController {
             type = String.class,
             bindFor = "args"),
         @OpenAPI.Param(
-            name = "restoreFromSavepoint",
-            description = "restored app from the savepoint or checkpoint",
+            name = "restoreFromLatestCheckpoint",
+            description = "restore app from the latest checkpoint recorded by StreamPark",
             required = false,
             type = Boolean.class,
-            defaultValue = "false",
-            bindFor = "restoreOrTriggerSavepoint"),
-        @OpenAPI.Param(
-            name = "savepointPath",
-            description = "savepoint or checkpoint path",
-            required = false,
-            type = String.class),
+            defaultValue = "false"),
         @OpenAPI.Param(
             name = "allowNonRestored",
             description = "ignore savepoint if cannot be restored",
@@ -443,10 +483,20 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false"),
       })
-  @PermissionScope(app = "#app.id")
   @PostMapping("app/start")
   @RequiresPermissions("app:start")
-  public RestResponse flinkStart(Application app) throws Exception {
+  public RestResponse flinkStart(Application app, StartOptions options) throws Exception {
+    app.setId(resolveAppByJobName(app.getJobName(), "start").getId());
+    if (Boolean.TRUE.equals(options.getRestoreFromLatestCheckpoint())) {
+      Savepoint latest = savepointService.getLatest(app.getId());
+      ApiAlertException.throwIfTrue(
+          latest == null || StringUtils.isBlank(latest.getPath()),
+          String.format(
+              "The application jobName=%s has no available checkpoint, start failed.",
+              app.getJobName()));
+      app.setRestoreOrTriggerSavepoint(true);
+      app.setSavepointPath(latest.getPath());
+    }
     applicationService.start(app, false);
     return RestResponse.success(true);
   }
@@ -462,11 +512,10 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
+            name = "jobName",
+            description = "current flink application name",
             required = true,
-            type = Long.class,
-            bindFor = "id"),
+            type = String.class),
         @OpenAPI.Param(
             name = "triggerSavepoint",
             description = "trigger savepoint before taking stopping",
@@ -486,10 +535,10 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false"),
       })
-  @PermissionScope(app = "#app.id")
   @PostMapping("app/cancel")
   @RequiresPermissions("app:cancel")
   public RestResponse flinkCancel(Application app) throws Exception {
+    app.setId(resolveAppByJobName(app.getJobName(), "cancel").getId());
     applicationService.cancel(app);
     return RestResponse.success();
   }
@@ -505,27 +554,9 @@ public class OpenAPIController {
       },
       param = {
         @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
+            name = "jobName",
+            description = "current flink application name",
             required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "triggerSavepoint",
-            description = "trigger savepoint before restarting",
-            required = false,
-            type = Boolean.class,
-            defaultValue = "false",
-            bindFor = "restoreOrTriggerSavepoint"),
-        @OpenAPI.Param(
-            name = "restoreFromSavepoint",
-            description = "restore restarted app from latest or given savepoint/checkpoint",
-            required = false,
-            type = Boolean.class,
-            defaultValue = "false"),
-        @OpenAPI.Param(
-            name = "savepointPath",
-            description = "savepoint or checkpoint path",
-            required = false,
             type = String.class),
         @OpenAPI.Param(
             name = "allowNonRestored",
@@ -540,72 +571,22 @@ public class OpenAPIController {
             type = Boolean.class,
             defaultValue = "false")
       })
-  @PermissionScope(app = "#app.id")
   @PostMapping("app/restart")
   @RequiresPermissions({"app:start", "app:cancel"})
-  public RestResponse flinkRestart(Application app, RestartOptions options) throws Exception {
-    restart(app, options.getRestoreFromSavepoint());
+  public RestResponse flinkRestart(Application app) throws Exception {
+    app.setId(resolveAppByJobName(app.getJobName(), "restart").getId());
+    restart(app);
     return RestResponse.success(true);
-  }
-
-  @OpenAPI(
-      name = "flinkSavepointTrigger",
-      header = {
-        @OpenAPI.Param(
-            name = "Authorization",
-            description = "Access authorization token",
-            required = true,
-            type = String.class)
-      },
-      param = {
-        @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
-            required = true,
-            type = Long.class),
-        @OpenAPI.Param(
-            name = "savepointPath",
-            description = "savepoint path",
-            required = false,
-            type = String.class)
-      })
-  @PermissionScope(app = "#id")
-  @PostMapping("app/savepoint/trigger")
-  @RequiresPermissions("savepoint:trigger")
-  public RestResponse flinkSavepointTrigger(@NotNull Long id, String savepointPath)
-      throws Exception {
-    savepointService.trigger(id, savepointPath);
-    return RestResponse.success(true);
-  }
-
-  @OpenAPI(
-      name = "flinkSavepointLatest",
-      header = {
-        @OpenAPI.Param(
-            name = "Authorization",
-            description = "Access authorization token",
-            required = true,
-            type = String.class)
-      },
-      param = {
-        @OpenAPI.Param(
-            name = "id",
-            description = "current flink application id",
-            required = true,
-            type = Long.class)
-      })
-  @PermissionScope(app = "#id")
-  @PostMapping("app/savepoint/latest")
-  @RequiresPermissions("app:view")
-  public RestResponse flinkSavepointLatest(@NotNull Long id) {
-    Savepoint savepoint = savepointService.getLatest(id);
-    return RestResponse.success(savepoint);
   }
 
   @PostMapping("curl")
   public RestResponse copyOpenApiCurl(
-      @NotBlank String name, String baseUrl, @NotNull Long appId, @NotNull Long teamId) {
-    String url = openAPIComponent.getOpenApiCUrl(name, baseUrl, appId, teamId);
+      @NotBlank String name,
+      String baseUrl,
+      @NotNull Long appId,
+      @NotNull Long teamId,
+      @NotBlank String jobName) {
+    String url = openAPIComponent.getOpenApiCUrl(name, baseUrl, appId, teamId, jobName);
     return RestResponse.success(url);
   }
 
@@ -615,22 +596,25 @@ public class OpenAPIController {
     return RestResponse.success(openAPISchema);
   }
 
-  private void restart(Application app, Boolean restoreFromSavepoint) throws Exception {
+  private void restart(Application app) throws Exception {
     Long appId = app.getId();
+    app.setRestoreOrTriggerSavepoint(false);
+    app.setSavepointPath(null);
     applicationService.cancel(app);
     waitUntilCanStart(appId, app.getSavepointTimeout());
 
+    Savepoint latest = savepointService.getLatest(appId);
+    ApiAlertException.throwIfTrue(
+        latest == null || StringUtils.isBlank(latest.getPath()),
+        String.format(
+            "The application jobName=%s has no available checkpoint, restart failed.",
+            app.getJobName()));
+
     Application startParam = new Application();
     startParam.setId(appId);
-    boolean restore =
-        restoreFromSavepoint == null
-            ? Boolean.TRUE.equals(app.getRestoreOrTriggerSavepoint())
-            : restoreFromSavepoint;
-    startParam.setRestoreOrTriggerSavepoint(restore);
+    startParam.setRestoreOrTriggerSavepoint(true);
     startParam.setAllowNonRestored(Boolean.TRUE.equals(app.getAllowNonRestored()));
-    if (!Boolean.TRUE.equals(app.getRestoreOrTriggerSavepoint())) {
-      startParam.setSavepointPath(app.getSavepointPath());
-    }
+    startParam.setSavepointPath(latest.getPath());
     applicationService.start(startParam, false);
   }
 
@@ -648,16 +632,123 @@ public class OpenAPIController {
         String.format("Timed out waiting application %s to stop before restart", appId));
   }
 
-  public static class RestartOptions {
+  public static class CopyRequest {
 
-    private Boolean restoreFromSavepoint;
+    private String srcJobName;
 
-    public Boolean getRestoreFromSavepoint() {
-      return restoreFromSavepoint;
+    private String dstJobName;
+
+    public String getSrcJobName() {
+      return srcJobName;
     }
 
-    public void setRestoreFromSavepoint(Boolean restoreFromSavepoint) {
-      this.restoreFromSavepoint = restoreFromSavepoint;
+    public void setSrcJobName(String srcJobName) {
+      this.srcJobName = srcJobName;
+    }
+
+    public String getDstJobName() {
+      return dstJobName;
+    }
+
+    public void setDstJobName(String dstJobName) {
+      this.dstJobName = dstJobName;
+    }
+  }
+
+  public static class DeployRequest extends CopyRequest {
+
+    private String flinkSql;
+
+    private String args;
+
+    private String mainClass;
+
+    private String dynamicProperties;
+
+    private String flinkImage;
+
+    private String k8sPodTemplate;
+
+    private Boolean forceBuild;
+
+    public Application toApplication() {
+      Application app = new Application();
+      app.setFlinkSql(flinkSql);
+      app.setArgs(args);
+      app.setMainClass(mainClass);
+      app.setDynamicProperties(dynamicProperties);
+      app.setFlinkImage(flinkImage);
+      app.setK8sPodTemplate(k8sPodTemplate);
+      return app;
+    }
+
+    public String getFlinkSql() {
+      return flinkSql;
+    }
+
+    public void setFlinkSql(String flinkSql) {
+      this.flinkSql = flinkSql;
+    }
+
+    public String getArgs() {
+      return args;
+    }
+
+    public void setArgs(String args) {
+      this.args = args;
+    }
+
+    public String getMainClass() {
+      return mainClass;
+    }
+
+    public void setMainClass(String mainClass) {
+      this.mainClass = mainClass;
+    }
+
+    public String getDynamicProperties() {
+      return dynamicProperties;
+    }
+
+    public void setDynamicProperties(String dynamicProperties) {
+      this.dynamicProperties = dynamicProperties;
+    }
+
+    public String getFlinkImage() {
+      return flinkImage;
+    }
+
+    public void setFlinkImage(String flinkImage) {
+      this.flinkImage = flinkImage;
+    }
+
+    public String getK8sPodTemplate() {
+      return k8sPodTemplate;
+    }
+
+    public void setK8sPodTemplate(String k8sPodTemplate) {
+      this.k8sPodTemplate = k8sPodTemplate;
+    }
+
+    public Boolean getForceBuild() {
+      return forceBuild;
+    }
+
+    public void setForceBuild(Boolean forceBuild) {
+      this.forceBuild = forceBuild;
+    }
+  }
+
+  public static class StartOptions {
+
+    private Boolean restoreFromLatestCheckpoint;
+
+    public Boolean getRestoreFromLatestCheckpoint() {
+      return restoreFromLatestCheckpoint;
+    }
+
+    public void setRestoreFromLatestCheckpoint(Boolean restoreFromLatestCheckpoint) {
+      this.restoreFromLatestCheckpoint = restoreFromLatestCheckpoint;
     }
   }
 }

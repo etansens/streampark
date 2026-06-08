@@ -57,10 +57,12 @@
   const openApiActions = [
     { name: 'flinkGet', label: 'flink.app.detail.copyGetcURL' },
     { name: 'flinkCopy', label: 'flink.app.detail.copyCopycURL' },
+    { name: 'flinkDeploy', label: 'flink.app.detail.copyDeploycURL' },
     { name: 'flinkUpdate', label: 'flink.app.detail.copyUpdatecURL' },
     { name: 'flinkBuild', label: 'flink.app.detail.copyBuildcURL' },
     { name: 'flinkStart', label: 'flink.app.detail.copyStartcURL' },
     { name: 'flinkCancel', label: 'flink.app.detail.copyCancelcURL' },
+    { name: 'flinkRestart', label: 'flink.app.detail.copyRestartcURL' },
   ];
   const detailTabs = reactive({
     showConf: false,

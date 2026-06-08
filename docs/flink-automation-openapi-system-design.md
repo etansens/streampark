@@ -33,7 +33,7 @@ StreamPark 已经通过控制台 UI 和内部 `/flink/*` 接口提供完整的 F
 | 配置自动化 | 支持更新 SQL、主类、程序参数、Dynamic Properties 和 Kubernetes Pod Template。 |
 | 构建编排 | 触发 StreamPark 构建/发布流程，并轮询构建状态。 |
 | 运行态控制 | 通过 OpenAPI 启动、停止和重启 Flink 应用。 |
-| 状态恢复 | 在任务和运行环境支持的前提下，从指定或最新 checkpoint/savepoint 恢复启动。 |
+| 状态恢复 | 在任务和运行环境支持的前提下，从 StreamPark 记录的 latest checkpoint/savepoint 恢复启动。 |
 | 操作可见性 | 在应用详情页提供常用 OpenAPI curl 复制入口。 |
 | 回归保障 | 为 OpenAPI 行为和 token 认证补充单元测试与测试用例文档。 |
 
@@ -44,7 +44,7 @@ StreamPark 已经通过控制台 UI 和内部 `/flink/*` 接口提供完整的 F
 | OpenAPI Jar 上传 | 业务 Jar 预期已经内置在运行镜像或可被 Flink 运行环境访问。 |
 | 用户名密码换取 OpenAPI token | 访问 token 由 StreamPark 提前创建和管理。 |
 | 第二套应用生命周期实现 | OpenAPI 复用现有 StreamPark Service，避免控制台和 OpenAPI 行为分叉。 |
-| 完整 savepoint 历史 OpenAPI | 当前仅暴露 latest 查询；完整历史仍保留在内部 `/flink/savepoint/history`。 |
+| 独立 savepoint/checkpoint OpenAPI | OpenAPI 不暴露 trigger/latest/history；停止前 savepoint 和启动恢复收敛到 start/cancel/restart 参数。 |
 | 替换控制台 UI 行为 | 控制台内部 `/flink/*` 行为仍是现有能力的来源和参考。 |
 
 ## 总体架构
@@ -68,14 +68,14 @@ OpenAPI 层是现有 StreamPark Service 能力之上的轻量适配层。
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | OpenAPI Controller | `streampark-console-service/src/main/java/org/apache/streampark/console/core/controller/OpenAPIController.java` | 暴露 `/openapi/app/*` 生命周期接口，并委托给现有 Service。 |
-| OpenAPI schema/curl 生成器 | `streampark-console-service/src/main/java/org/apache/streampark/console/core/component/OpenAPIComponent.java` | 生成 curl 示例，并自动填充应用 ID 和 Team ID 等必填参数。 |
+| OpenAPI schema/curl 生成器 | `streampark-console-service/src/main/java/org/apache/streampark/console/core/component/OpenAPIComponent.java` | 生成 curl 示例，并自动填充任务名、应用 ID 和 Team ID 等必填参数。 |
 | OpenAPI 认证 | `streampark-console-service/src/main/java/org/apache/streampark/console/system/authentication/ShiroRealm.java` | 通过“请求 credential 与数据库加密 token 解密值比较”的方式认证 OpenAPI token。 |
 | OpenAPI 切面 | `streampark-console-service/src/main/java/org/apache/streampark/console/core/aspect/OpenAPIAspect.java` | 限制 OpenAPI token 只能访问带 `@OpenAPI` 的接口或白名单接口，并处理 `bindFor` 字段映射。 |
-| Savepoint Controller | `streampark-console-service/src/main/java/org/apache/streampark/console/core/controller/SavepointController.java` | 补充控制台会话使用的 latest savepoint 查询能力。 |
+| Savepoint Controller | `streampark-console-service/src/main/java/org/apache/streampark/console/core/controller/SavepointController.java` | 保留控制台会话使用的 savepoint/checkpoint 能力；OpenAPI 层不直接暴露独立 savepoint 接口。 |
 | 应用详情页 | `streampark-console-webapp/src/views/flink/app/Detail.vue` | 展示 get、copy、update、build、start、cancel 等 Rest API 操作按钮。 |
-| 请求弹窗 | `streampark-console-webapp/src/views/flink/app/components/RequestModal/index.tsx` | 请求后端生成 curl，并传递 `appId` 和 `teamId`。 |
+| 请求弹窗 | `streampark-console-webapp/src/views/flink/app/components/RequestModal/index.tsx` | 请求后端生成 curl，并传递当前任务 `jobName`、`appId` 和 `teamId` 上下文。 |
 | 文档 | `docs/flink-automation-openapi.md`、`docs/flink-automation-openapi-test-cases.md` | 描述接口、调用方式和测试用例。 |
-| 测试 | `OpenAPIControllerTest.java`、`ShiroRealmTest.java` | 覆盖 Controller 委托、schema 字段、restart 流程、savepoint 方法和 token 认证。 |
+| 测试 | `OpenAPIControllerTest.java`、`OpenAPIComponentTest.java`、`ShiroRealmTest.java` | 覆盖 Controller 委托、schema 字段、curl 生成、restart 流程和 token 认证。 |
 
 ## 对外接口面
 
@@ -85,33 +85,31 @@ OpenAPI 层是现有 StreamPark Service 能力之上的轻量适配层。
 | --- | --- | --- | --- |
 | 查询应用 | `/openapi/app/get` | `app:detail` | `ApplicationService.getApp` |
 | 复制应用 | `/openapi/app/copy` | `app:copy` | `ApplicationService.copy` |
-| 创建应用 | `/openapi/app/create` | `app:create` | `ApplicationService.create` |
+| 一键部署 | `/openapi/app/deploy` | `app:copy`、`app:update`、`app:create` | `copy`、`update`、`buildApplication` |
 | 更新应用 | `/openapi/app/update` | `app:update` | `ApplicationService.update` |
-| 构建应用 | `/openapi/app/build` | `app:create` | `ApplicationService.buildApplication` |
-| 查询构建状态 | `/openapi/app/build/status` | `app:view` | `AppBuildPipeService.getCurrentBuildPipeline` |
+| 构建应用/查询构建状态 | `/openapi/app/build` | `app:create` | `ApplicationService.buildApplication`、`AppBuildPipeService.getCurrentBuildPipeline` |
 | 启动应用 | `/openapi/app/start` | `app:start` | `ApplicationService.start` |
 | 停止应用 | `/openapi/app/cancel` | `app:cancel` | `ApplicationService.cancel` |
 | 重启应用 | `/openapi/app/restart` | `app:start`、`app:cancel` | `cancel`、等待、`start` |
-| 触发 savepoint | `/openapi/app/savepoint/trigger` | `savepoint:trigger` | `SavepointService.trigger` |
-| 查询 latest savepoint/checkpoint | `/openapi/app/savepoint/latest` | `app:view` | `SavepointService.getLatest` |
 
 ## 自动化部署流程
 
 推荐采用“模板任务优先”的自动化流程。
 
 ```text
-1. 选择模板应用 ID。
-2. 调用 /openapi/app/copy，传入 id、jobName 和 teamId。
-3. 调用 /openapi/app/get 查询复制后的应用详情。
-4. 调用 /openapi/app/update，只提交需要修改的字段。
-5. 调用 /openapi/app/build 触发构建发布。
-6. 轮询 /openapi/app/build/status，直到构建完成或失败。
-7. 调用 /openapi/app/start 启动任务。
-8. 轮询 /openapi/app/get，直到任务进入 RUNNING 或终态失败。
-9. 后续按需执行 cancel、restart、savepoint trigger 和 latest savepoint 查询。
+1. 选择模板任务名称 srcJobName。
+2. 调用 /openapi/app/deploy，传入 srcJobName 和 dstJobName。
+3. 服务端在 dstJobName 不存在时复制模板、局部更新并触发构建。
+4. 调用 /openapi/app/get 查询复制后的应用详情。
+5. 轮询 /openapi/app/build，直到 buildStatus 为 COMPLETED 或 FAILED。
+6. 调用 /openapi/app/start 启动任务；如需恢复则传 restoreFromLatestCheckpoint=true。
+7. 轮询 /openapi/app/get，直到任务进入 RUNNING 或终态失败。
+8. 后续按需执行 cancel 或 restart。停止前 savepoint 通过 cancel 的 triggerSavepoint 参数完成；restart 会自动从 latest checkpoint 启动。
 ```
 
-`update` 请求支持局部更新。接口层会先读取当前应用详情，将请求中显式传入的字段覆盖到现有配置上，再调用 `ApplicationService.update()`。未传字段保持原值；显式传入空字符串会清空对应字段。`teamId` 不作为可更新字段，避免调用方通过局部更新改变 Team 权限上下文。
+OpenAPI 任务级接口使用 `jobName` 定位任务，内部解析为 `Application.id` 后复用现有 Service。`copy/deploy` 请求不接受外部传入 `teamId`。接口层会先读取源应用，并将源应用的 `teamId` 写入复制请求，避免调用方伪造 Team 权限上下文。
+
+`update` 请求支持局部更新。接口层会先读取当前应用详情，将请求中显式传入的字段覆盖到现有配置上，再调用 `ApplicationService.update()`。未传字段保持原值；显式传入空字符串会清空对应字段。OpenAPI update 只暴露 `mainClass`、`flinkSql`、`args`、`dynamicProperties`、`flinkImage`、`k8sPodTemplate` 这组部署覆盖字段；`teamId`、执行模式、Flink 版本、Jar 路径、集群绑定、YARN 队列、告警、tags、checkpoint 失败策略等复杂控制台字段不作为 OpenAPI update/deploy 对外参数。
 
 ## 参数绑定策略
 
@@ -119,11 +117,19 @@ OpenAPI 层是现有 StreamPark Service 能力之上的轻量适配层。
 
 | 对外参数 | 内部绑定 | 说明 |
 | --- | --- | --- |
-| `id` | `Application.id` | get、build、start、cancel、restart、savepoint 等接口统一使用。 |
-| `argument` | `Application.args` | copy/start 的可选运行参数覆盖值。 |
-| `restoreFromSavepoint` | start 时绑定到 `Application.restoreOrTriggerSavepoint` | 对外表达“启动时是否恢复”。 |
-| `triggerSavepoint` | cancel/restart 时绑定到 `Application.restoreOrTriggerSavepoint` | 对外表达“停止或重启前是否触发 savepoint”。 |
-| `savepointPath` | `Application.savepointPath` | 根据操作语义，可以是 savepoint 或 checkpoint 路径。 |
+| `jobName` | 解析为 `Application.id` | get、update、build、start、cancel、restart 等接口统一使用。 |
+| `srcJobName` | 解析为源 `Application.id` | copy/deploy 的源模板任务名称。 |
+| `dstJobName` | `Application.jobName` | copy/deploy 的目标任务名称。 |
+| `mainClass` | `Application.mainClass` | update/deploy 可选覆盖字段，用于 Jar/custom code 主类。 |
+| `flinkSql` | `Application.flinkSql` | update/deploy 可选覆盖字段，用于 SQL 内容。 |
+| `args` | `Application.args` | update/deploy 可选覆盖字段，用于 Program Args。 |
+| `dynamicProperties` | `Application.dynamicProperties` | update/deploy 可选覆盖字段，用于 Flink `-D` 参数。 |
+| `flinkImage` | `Application.flinkImage` | update/deploy 可选覆盖字段，用于 Kubernetes Flink base image。 |
+| `k8sPodTemplate` | `Application.k8sPodTemplate` | update/deploy 可选覆盖字段，用于 Kubernetes 通用 Pod Template。 |
+| `argument` | `Application.args` | start 的可选运行参数覆盖值；copy 不接受参数覆盖。 |
+| `restoreFromLatestCheckpoint` | start 内部查询 latest 记录后设置 `Application.restoreOrTriggerSavepoint` 和 `savepointPath` | 对外表达“启动时是否从最新 checkpoint 恢复”。 |
+| `triggerSavepoint` | cancel 时绑定到 `Application.restoreOrTriggerSavepoint` | 对外表达“停止前是否触发 savepoint”。 |
+| `savepointPath` | cancel 时绑定到 `Application.savepointPath` | 停止前触发 savepoint 的目录。 |
 | `allowNonRestored` | `Application.allowNonRestored` | 透传给 Flink 恢复逻辑。 |
 | `drain` | `Application.drain` | 控制停止前是否 drain。 |
 
@@ -157,24 +163,25 @@ restart request
   -> applicationService.cancel(app)
   -> 轮询 applicationService.getById(appId)
   -> 等待 application.isCanBeStart()
+  -> savepointService.getLatest(appId)
   -> applicationService.start(startParam, false)
 ```
 
 该接口同时要求 `app:start` 和 `app:cancel` 权限。默认等待超时时间为 60 分钟，轮询间隔为 5 秒。调用方应设置足够长的 HTTP 超时时间。
 
-restart 启动阶段会重新构造一个只包含启动所需字段的 `Application` 对象，避免停止阶段字段泄漏到启动调用中，也让编排边界更明确。
+restart 会忽略外部传入的 savepoint 触发或恢复路径，停止阶段不触发 savepoint，启动阶段自动使用 latest checkpoint 路径。启动阶段会重新构造一个只包含启动所需字段的 `Application` 对象，避免停止阶段字段泄漏到启动调用中，也让编排边界更明确。
 
 ## Savepoint 与 Checkpoint 设计
 
-OpenAPI 提供三个状态恢复相关能力。
+OpenAPI 不暴露独立 savepoint trigger/latest 接口。状态恢复能力收敛到 start/cancel。
 
 | 操作 | 行为 |
 | --- | --- |
-| `/openapi/app/savepoint/trigger` | 对运行中的应用触发 savepoint。 |
-| `/openapi/app/savepoint/latest` | 返回最新记录的 `Savepoint` 对象，该记录可能代表 savepoint 或 checkpoint。 |
-| `/openapi/app/start` + `restoreFromSavepoint=true` | 使用指定 `savepointPath` 启动；未传路径时尝试使用 latest 记录。 |
+| `/openapi/app/start` + `restoreFromLatestCheckpoint=true` | 内部读取 latest 记录作为恢复路径；未找到记录时启动失败。 |
+| `/openapi/app/cancel` + `triggerSavepoint=true` | 停止前触发 savepoint，可选传入 savepointPath。 |
+| `/openapi/app/restart` | 停止后自动读取 latest checkpoint 作为恢复路径；未找到记录时重启失败。 |
 
-当前只暴露 latest 查询，不暴露完整历史列表。完整历史仍是控制台内部会话场景。使用 OpenAPI token 调用 `/flink/savepoint/history` 预期会失败，除非显式加入白名单。
+完整历史仍是控制台内部会话场景。使用 OpenAPI token 调用 `/flink/savepoint/history` 预期会失败，除非显式加入白名单。
 
 savepoint/checkpoint 恢复是否成功依赖任务和运行环境。`dim-class` 测试表明，即使 API 调用被接受，自动 checkpoint 路径恢复和停止前触发 savepoint 仍可能在 Flink/Kubernetes 运行阶段失败。
 
@@ -186,12 +193,14 @@ savepoint/checkpoint 恢复是否成功依赖任务和运行环境。`dim-class`
 | --- | --- |
 | 作业查询 | `flinkGet` |
 | 作业复制 | `flinkCopy` |
+| 一键部署 | `flinkDeploy` |
 | 作业更新 | `flinkUpdate` |
 | 作业构建 | `flinkBuild` |
 | 作业启动 | `flinkStart` |
 | 作业停止 | `flinkCancel` |
+| 作业重启 | `flinkRestart` |
 
-请求弹窗调用 `/openapi/curl`，传入 `name`、`appId` 和 `teamId`。`OpenAPIComponent` 对 `bindFor` 为 `id`、`appId` 或 `teamId` 的必填参数自动填充当前应用上下文，确保 UI 生成的 curl 与实际应用一致。
+请求弹窗调用 `/openapi/curl`，传入 `name`、`jobName`、`appId` 和 `teamId`。`OpenAPIComponent` 对 `jobName/srcJobName/dstJobName/id/appId/teamId` 等必填参数自动填充当前应用上下文，确保 UI 生成的 curl 与实际应用一致。`dstJobName` 默认生成 `${jobName}-copy`，调用方复制后可按目标环境修改。
 
 ## 错误处理
 
@@ -202,11 +211,11 @@ savepoint/checkpoint 恢复是否成功依赖任务和运行环境。`dim-class`
 | 缺少或无效 token | 请求被认证拦截，测试中表现为 HTTP 401。 |
 | OpenAPI token 调用未开放内部接口 | 返回 `Openapi unsupported: <path>`。 |
 | 复制任务名重复 | copy 失败并返回任务名重复错误。 |
-| build 使用 `appId` 而不是 `id` | 参数校验失败；OpenAPI 调用方必须使用对外参数名。 |
-| 查询不存在应用 ID | 当前可能返回服务端错误，后续应优化为明确的 not-found 响应。 |
+| build 使用 `appId` 而不是 `jobName` | 参数校验失败；OpenAPI 调用方必须使用对外参数名。 |
+| 查询不存在 jobName | 返回明确 not-found 错误。 |
 | Flink 运行时恢复失败 | API 可先返回成功，但任务随后进入 `FAILED`；调用方必须轮询任务状态。 |
 
-外部调用方应区分“API 接受请求”和“Flink 运行时操作成功”。生命周期接口调用后必须继续轮询 `/openapi/app/get` 或 `/openapi/app/build/status`。
+外部调用方应区分“API 接受请求”和“Flink 运行时操作成功”。生命周期接口调用后必须继续轮询 `/openapi/app/get`；构建进度通过重复调用 `/openapi/app/build` 获取。
 
 ## 测试与验证
 
@@ -215,13 +224,13 @@ savepoint/checkpoint 恢复是否成功依赖任务和运行环境。`dim-class`
 后端聚焦验证命令：
 
 ```bash
-source /etc/profile.d/java.sh && ./mvnw -pl streampark-console/streampark-console-service -DskipTests=false -Dtest=OpenAPIControllerTest,ShiroRealmTest test
+source /etc/profile.d/java.sh && ./mvnw -pl streampark-console/streampark-console-service -DskipTests=false -Dtest=OpenAPIControllerTest,OpenAPIComponentTest,ShiroRealmTest test
 ```
 
 实际结果：
 
 ```text
-Tests run: 12, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 27, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -245,13 +254,13 @@ build successfully
 | --- | --- |
 | 模板任务 | `dim-class`，应用 ID `10073`，Team `100000` |
 | Dynamic Properties 更新 | 通过；复制任务包含 `-Dparallelism.default=3` |
-| get、copy、update、build、build-status、start | 通过；复制任务 `10083` 可启动到 `RUNNING` |
-| 手动 savepoint trigger 和 latest 查询 | 接口接受；`10083` 返回 latest 路径 |
+| get、copy、update、build 轮询、start | 通过；复制任务 `10083` 可启动到 `RUNNING` |
+| 独立 OpenAPI savepoint trigger/latest | 已移除；停止前 savepoint 通过 cancel 参数完成 |
 | 普通停止 | 通过；`10083` 可停止 |
 | restart | 通过；复制任务 `10087` restart 后回到 `RUNNING`，并清理到 `CANCELED` |
 | 错误 checkpoint 恢复 | 未进入 `RUNNING`；复制任务 `10085` 最终 `FAILED` |
 | `dim-class` 停止前触发 savepoint | 运行时失败；复制任务 `10086` 最终 `FAILED` |
-| copy 不传 `teamId` | 非预期成功，创建了 `10084`；这是已知缺口 |
+| copy 不传 `teamId` | 已调整为预期成功；新任务继承源任务 Team |
 | restart 权限不足测试 | 阻塞；测试环境未提供 `START_ONLY_TOKEN` |
 
 最终清理确认：本次复制出的测试任务没有残留 `RUNNING` 状态。
@@ -260,11 +269,10 @@ build successfully
 
 | 风险或缺口 | 影响 | 建议后续动作 |
 | --- | --- | --- |
-| copy 不传 `teamId` 仍可创建应用 | Team 权限范围校验弱于 OpenAPI schema 表达。 | 在服务调用前增加 OpenAPI 必填参数运行时校验。 |
-| 查询不存在应用 ID 可能返回 NPE/server error | 外部调用方拿到泛化 500，而不是明确 not-found。 | 在 `ApplicationService.getApp` 或 Controller 包装层返回类型化 not-found 错误。 |
+| 查询不存在 jobName | 外部调用方无法继续生命周期操作。 | Controller 包装层返回类型化 not-found 错误。 |
 | 停止前触发 savepoint 依赖运行环境 | API 接受不代表 Flink savepoint 一定成功。 | 文档化运行时约束，并在可行时暴露更明确的操作状态。 |
 | checkpoint 恢复可能长时间 `STARTING` 后失败 | 自动化系统可能误判恢复成功。 | 强制调用方轮询状态，并补充 Flink/Kubernetes 失败原因展示。 |
-| 未暴露完整 savepoint 历史 | 外部系统无法通过 OpenAPI 选择历史恢复点。 | 如果产品需要，新增 `/openapi/app/savepoint/history`。 |
+| 未暴露完整 savepoint 历史 | 外部系统无法通过 OpenAPI 选择历史恢复点。 | 维持控制台内部能力，OpenAPI 调用方使用 latest checkpoint 启动语义。 |
 
 ## 调用方操作建议
 
@@ -272,9 +280,9 @@ build successfully
 
 | 阶段 | 调用方要求 |
 | --- | --- |
-| Copy | 持久化返回的新应用 ID，后续所有步骤使用该 ID。 |
+| Deploy/Copy | 持久化目标任务名 `dstJobName`，后续所有任务级 OpenAPI 步骤使用该 `jobName`。 |
 | Update | 只提交需要修改的字段；需要清空字段时显式传入空字符串。 |
-| Build | 轮询 build status，直到构建流水线进入终态。 |
+| Build | 重复调用 `/openapi/app/build`，直到 `buildStatus` 进入 `COMPLETED` 或 `FAILED`。 |
 | Start | 轮询应用状态，直到 `RUNNING` 或终态失败。 |
 | Cancel | 轮询应用状态，直到 `CANCELED`、`FAILED` 或其他终态。 |
 | Restart | 设置较长 HTTP 超时时间，并在响应后继续轮询应用状态。 |
@@ -284,7 +292,6 @@ build successfully
 
 | 优先级 | 改进项 |
 | --- | --- |
-| 高 | 对 `copy` 强制执行 `teamId` 运行时必填校验。 |
 | 高 | 规范化应用不存在时的错误响应。 |
 | 高 | 为 start/recovery/savepoint 操作补充更清晰的运行时失败诊断。 |
 | 中 | 如果外部编排需要历史恢复点，新增 OpenAPI savepoint history。 |

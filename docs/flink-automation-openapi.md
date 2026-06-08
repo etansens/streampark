@@ -15,458 +15,526 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Flink Task Automation OpenAPI
+# Flink Automation OpenAPI
 
-本文档描述 StreamPark Console 中用于 Flink 任务自动化部署的 REST API 和 curl 测试用例。
+本文档说明 StreamPark Console 面向 Flink 自动化部署的 `/openapi/*` 接口。接口用于从模板任务复制、覆盖少量部署参数、构建、启动、停止和重启 Flink 任务。
 
-## 基础约定
-
-所有 `/openapi/*` 接口使用访问令牌认证：
+## 快速约定
 
 ```bash
 export BASE_URL="http://localhost:10000"
 export TOKEN="replace-with-streampark-access-token"
-export TEAM_ID="1"
-export VERSION_ID="1"
-export APP_ID="1"
+export SRC_JOB_NAME="template-job"
+export DST_JOB_NAME="target-job"
+export JOB_NAME="target-job"
 ```
 
-通用请求头：
+所有 OpenAPI 请求都需要认证头：
 
 ```bash
 -H "Authorization: ${TOKEN}"
 ```
 
-请求体均为 `application/x-www-form-urlencoded`。当前 Controller 使用 Spring MVC 表单参数绑定，不使用 JSON body。
-
-## 枚举
-
-| 参数 | 值 | 含义 |
-| --- | --- | --- |
-| `jobType` | `1` | Jar/custom code job |
-| `jobType` | `2` | Flink SQL job |
-| `appType` | `1` | StreamPark Flink |
-| `appType` | `2` | Apache Flink |
-| `executionMode` | `1` | remote/standalone |
-| `executionMode` | `2` | yarn-per-job |
-| `executionMode` | `3` | yarn-session |
-| `executionMode` | `4` | yarn-application |
-| `executionMode` | `5` | kubernetes-session |
-| `executionMode` | `6` | kubernetes-application |
-| `resourceFrom` | `1` | CICD/Git 构建 |
-| `resourceFrom` | `2` | 镜像内 Jar |
-| `format` | `1` | YAML |
-| `format` | `2` | properties |
-| `format` | `3` | HOCON |
-
-## 推荐自动化流程
-
-1. 创建或复制 Flink App，业务 Jar 默认已经包含在运行镜像中。
-2. 更新任务配置、SQL、主类、参数或动态属性。
-3. 触发构建发布。
-4. 轮询构建状态和任务详情。
-5. 启动任务，可指定 savepoint/checkpoint 恢复。
-6. 停止任务，可先触发 savepoint。
-7. 重启任务，可封装为 stop + wait + start。
-
-## OpenAPI 接口
-
-管理接口对应关系：
-
-| 管理操作 | 控制台内部接口 | OpenAPI 接口 |
-| --- | --- | --- |
-| 获取任务 | `POST /flink/app/get` | `POST /openapi/app/get` |
-| 复制任务 | `POST /flink/app/copy` | `POST /openapi/app/copy` |
-| 编辑任务 | `POST /flink/app/update` | `POST /openapi/app/update` |
-| 编译任务 | `POST /flink/pipe/build` | `POST /openapi/app/build` |
-| 启动任务 | `POST /flink/app/start` | `POST /openapi/app/start` |
-| 停止任务 | `POST /flink/app/cancel` | `POST /openapi/app/cancel` |
-
-### 查询任务详情
-
-`POST /openapi/app/get`
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `id` | 是 | Flink App ID |
+请求体统一使用 `application/x-www-form-urlencoded`。不要发送 JSON body。
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/get" \
   -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
+  --data-urlencode "jobName=${JOB_NAME}"
 ```
 
-等价于控制台内部接口：
+## 总体合同
+
+### 任务定位
+
+任务级接口统一使用 `jobName` 定位任务。服务端会把 `jobName` 解析为内部 `Application.id` 后复用现有 Service。
+
+| 场景 | 行为 |
+| --- | --- |
+| `jobName` 为空 | 返回失败，提示 `The jobName is required.` |
+| 找不到任务 | 返回失败，提示对应操作失败。 |
+| 同名任务超过 1 个 | 返回 ambiguous 失败。 |
+
+自动化调用方应保证任务名唯一。
+
+### 请求与响应
+
+所有接口返回 StreamPark 统一 `RestResponse`。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | 成功为 `success`，失败为 `error`。 |
+| `code` | number | 成功为 `200`；失败时为服务端错误码。 |
+| `data` | any | 接口业务数据。部分接口只返回布尔值或不返回该字段。 |
+| `message` | string | 错误说明，或部分接口的业务提示。 |
+
+### 部署覆盖字段
+
+`/openapi/app/update` 和 `/openapi/app/deploy` 只对外开放这组部署覆盖字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `mainClass` | Jar/custom code 任务主类。 |
+| `flinkSql` | Flink SQL 内容，提交时使用明文。 |
+| `args` | Program Args。 |
+| `dynamicProperties` | Flink `-D` 动态参数。可能包含敏感配置，不要直接打印到日志。 |
+| `flinkImage` | Kubernetes Application 模式使用的 Flink base image。 |
+| `k8sPodTemplate` | Kubernetes 通用 Pod Template YAML。 |
+
+未传字段保留原值；显式传入空字符串会清空该字段。
+
+OpenAPI update/deploy 只处理上表列出的字段。请求中包含其他字段时，服务端会忽略。
+
+### 构建状态
+
+`/openapi/app/build` 同时用于提交构建和轮询构建状态。
+
+对外只暴露三种状态：
+
+| 状态 | 说明 |
+| --- | --- |
+| `BUILDING` | 内部 pipeline 为 pending/running，或刚提交构建。 |
+| `COMPLETED` | 内部 pipeline 成功，或当前没有需要等待的构建。 |
+| `FAILED` | 内部 pipeline 失败。 |
+
+### Checkpoint 与 Savepoint
+
+OpenAPI 不暴露独立 savepoint trigger/latest 接口。
+
+| 操作 | 行为 |
+| --- | --- |
+| `start` + `restoreFromLatestCheckpoint=true` | 服务端读取 latest checkpoint/savepoint 记录作为恢复路径。 |
+| `cancel` + `triggerSavepoint=true` | 停止前触发 savepoint。 |
+| `restart` | 停止后自动读取 latest checkpoint/savepoint 记录启动。 |
+
+## 推荐流程
+
+1. 调用 `/openapi/app/deploy`，从模板任务复制目标任务、覆盖部署字段并触发构建。
+2. 重复调用 `/openapi/app/build`，直到 `buildStatus` 为 `COMPLETED` 或 `FAILED`。
+3. 按需调用 `/openapi/app/get` 查询任务详情。
+4. 调用 `/openapi/app/start` 启动任务，可选择从 latest checkpoint 恢复。
+5. 调用 `/openapi/app/cancel` 停止任务，可选择停止前触发 savepoint。
+6. 调用 `/openapi/app/restart` 执行停止、等待、从 latest checkpoint 启动的同步编排。
+
+最短部署示例：
 
 ```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/app/get?id=10074&teamId=100000'
+curl -X POST "${BASE_URL}/openapi/app/deploy" \
+  -H "Authorization: ${TOKEN}" \
+  --data-urlencode "srcJobName=${SRC_JOB_NAME}" \
+  --data-urlencode "dstJobName=${DST_JOB_NAME}" \
+  --data-urlencode "mainClass=org.example.MainJob" \
+  --data-urlencode "flinkImage=registry.example.com/flink/job-runtime:20260603" \
+  --data-urlencode "args=--env prod" \
+  --data-urlencode "forceBuild=false"
+
+curl -X POST "${BASE_URL}/openapi/app/build" \
+  -H "Authorization: ${TOKEN}" \
+  --data-urlencode "jobName=${DST_JOB_NAME}" \
+  --data-urlencode "forceBuild=false"
 ```
 
-### 复制任务
+## 接口总览
+
+| 操作 | OpenAPI 接口 | 说明 |
+| --- | --- | --- |
+| 查询任务 | `POST /openapi/app/get` | 按 `jobName` 查询任务详情。 |
+| 复制任务 | `POST /openapi/app/copy` | 从模板任务复制目标任务，不做参数覆盖。 |
+| 一键部署 | `POST /openapi/app/deploy` | copy + update overlay + build，不启动任务。 |
+| 更新任务 | `POST /openapi/app/update` | 仅覆盖部署字段，不构建、不启动。 |
+| 构建/查询构建 | `POST /openapi/app/build` | 提交构建或轮询三态构建状态。 |
+| 启动任务 | `POST /openapi/app/start` | 启动任务，可从 latest checkpoint 恢复。 |
+| 停止任务 | `POST /openapi/app/cancel` | 停止任务，可先触发 savepoint。 |
+| 重启任务 | `POST /openapi/app/restart` | 停止后等待可启动，再从 latest checkpoint 启动。 |
+
+## 接口详情
+
+### 1. 查询任务
+
+`POST /openapi/app/get`
+
+按 `jobName` 查询完整任务详情。返回 `Application` 明细。
+
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data.id` | number | StreamPark 内部任务 ID。 |
+| `data.jobName` | string | 任务名称。 |
+| `data.teamId` | number | 任务所属 Team ID。 |
+| `data.state` | number | 任务运行状态，取值来自 `FlinkAppState`。 |
+| `data.flinkSql` | string | SQL 任务内容，当前返回值可能为 Base64 编码。 |
+| `data.args` | string | Program Args。 |
+| `data.dynamicProperties` | string | Flink `-D` 动态参数，可能包含敏感配置。 |
+| `data.flinkImage` | string | Kubernetes Application 模式使用的 Flink base image。 |
+
+**示例**
+
+```bash
+curl -X POST "${BASE_URL}/openapi/app/get" \
+  -H "Authorization: ${TOKEN}" \
+  --data-urlencode "jobName=${JOB_NAME}"
+```
+
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": {
+    "id": 10086,
+    "jobName": "target-job",
+    "teamId": 100000,
+    "state": 0,
+    "args": "--env prod",
+    "dynamicProperties": "-Dexecution.checkpointing.interval=30000",
+    "flinkImage": "registry.example.com/flink/job-runtime:20260603"
+  }
+}
+```
+
+### 2. 复制任务
 
 `POST /openapi/app/copy`
 
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `id` | 是 | 源 Flink App ID |
-| `jobName` | 是 | 新任务名称，不能与现有任务重复 |
-| `teamId` | 是 | Team ID，用于权限范围校验 |
-| `argument` | 否 | 复制后任务的运行参数覆盖值，绑定到 `args` |
+从模板任务复制一个新任务。copy 只负责创建目标任务，不接受 `args`、`mainClass`、`flinkSql` 等参数覆盖。参数覆盖请使用 `/openapi/app/update` 或 `/openapi/app/deploy`。
 
-复制任务会沿用源任务的 SQL、Jar、配置、Flink 版本、执行模式、动态参数、checkpoint/savepoint 相关配置等，返回新任务 ID。
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `srcJobName` | 是 | string | 无 | 源模板任务名称，必须唯一定位一个已有任务。 |
+| `dstJobName` | 是 | string | 无 | 新任务名称，不能与现有任务重复。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data.id` | string | 新任务的内部任务 ID；服务端按字符串返回。 |
+
+**业务逻辑**
+
+服务端根据 `srcJobName` 找到源任务，读取源任务的 `id` 和 `teamId`，把 `dstJobName` 设置为新任务名后调用现有复制服务。调用方不需要也不能传 `teamId`。
+
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/copy" \
   -H "Authorization: ${TOKEN}" \
-  --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "jobName=sql2iceberg-demo-2" \
-  --data-urlencode "teamId=${TEAM_ID}"
+  --data-urlencode "srcJobName=${SRC_JOB_NAME}" \
+  --data-urlencode "dstJobName=${DST_JOB_NAME}"
 ```
 
-等价于控制台内部接口：
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": {
+    "id": "10086"
+  }
+}
+```
+
+### 3. 一键部署
+
+`POST /openapi/app/deploy`
+
+从 `srcJobName` 复制到 `dstJobName`，对新任务执行局部覆盖并触发构建。deploy 不启动任务。
+
+`dstJobName` 同时作为幂等部署 ID。目标任务已存在时，接口直接返回目标任务状态，不重复 copy、update 或 build。
+
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `srcJobName` | 是 | string | 无 | 源模板任务名称，必须唯一定位一个已有任务。 |
+| `dstJobName` | 是 | string | 无 | 目标任务名称，同时作为幂等部署 ID。 |
+| `mainClass` | 否 | string | 保留模板值 | Jar/custom code 任务主类。 |
+| `flinkSql` | 否 | string | 保留模板值 | SQL 内容，提交时使用明文。 |
+| `args` | 否 | string | 保留模板值 | Program Args。 |
+| `dynamicProperties` | 否 | string | 保留模板值 | Flink `-D` 动态参数。 |
+| `flinkImage` | 否 | string | 保留模板值 | Kubernetes Application 模式使用的 Flink base image。 |
+| `k8sPodTemplate` | 否 | string | 保留模板值 | Kubernetes 通用 Pod Template YAML。 |
+| `forceBuild` | 否 | boolean | `false` | 是否强制构建。构建中不会并发提交第二个构建。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data.srcJobName` | string | 源模板任务名称。 |
+| `data.dstJobName` | string | 目标任务名称。 |
+| `data.appId` | number | 目标任务内部 ID。 |
+| `data.state` | number | 目标任务状态。新复制任务可能为空。 |
+| `data.buildSubmitted` | boolean | 本次调用是否提交了构建。目标已存在时为 `false`。 |
+| `data.message` | string | `Build submitted.` 或 `Application already exists.`。 |
+
+**示例**
 
 ```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/app/copy?id=10074&jobName=sql2iceberg-demo-2&teamId=100000'
-```
-
-### 创建 Flink SQL 任务
-
-`POST /openapi/app/create`
-
-常用参数：
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `teamId` | 是 | Team ID |
-| `jobName` | 是 | 任务名称 |
-| `jobType` | 是 | `2` 表示 Flink SQL |
-| `executionMode` | 是 | 执行模式 |
-| `versionId` | 是 | Flink 版本 ID |
-| `appType` | 是 | SQL 任务使用 `1` |
-| `flinkSql` | 是 | SQL 内容 |
-| `dependency` | 否 | 依赖 JSON 字符串 |
-| `config` | 否 | 配置内容 |
-| `format` | 否 | 配置格式 |
-| `dynamicProperties` | 否 | Flink `-D` 参数 |
-| `args` | 否 | 程序参数 |
-| `options` | 否 | 任务选项 JSON 字符串 |
-| `resolveOrder` | 否 | classloader resolve order |
-| `restartSize` | 否 | 失败自动重启次数 |
-| `alertId` | 否 | 告警 ID |
-| `cpMaxFailureInterval` | 否 | checkpoint 失败监控窗口 |
-| `cpFailureRateInterval` | 否 | checkpoint 失败次数阈值 |
-| `cpFailureAction` | 否 | `1` 告警，`2` 重启 |
-
-```bash
-curl -X POST "${BASE_URL}/openapi/app/create" \
+curl -X POST "${BASE_URL}/openapi/app/deploy" \
   -H "Authorization: ${TOKEN}" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "teamId=${TEAM_ID}" \
-  --data-urlencode "jobName=demo-sql-job" \
-  --data-urlencode "jobType=2" \
-  --data-urlencode "executionMode=4" \
-  --data-urlencode "versionId=${VERSION_ID}" \
-  --data-urlencode "appType=1" \
-  --data-urlencode "flinkSql=CREATE TABLE source_table (id INT) WITH ('connector'='datagen'); CREATE TABLE sink_table (id INT) WITH ('connector'='print'); INSERT INTO sink_table SELECT id FROM source_table;" \
-  --data-urlencode "dynamicProperties=-Dstate.savepoints.dir=hdfs:///streampark/savepoints -Dexecution.checkpointing.interval=60000" \
-  --data-urlencode "options={}" \
-  --data-urlencode "resolveOrder=0" \
-  --data-urlencode "restartSize=3"
+  --data-urlencode "srcJobName=${SRC_JOB_NAME}" \
+  --data-urlencode "dstJobName=${DST_JOB_NAME}" \
+  --data-urlencode "mainClass=org.example.MainJob" \
+  --data-urlencode "flinkImage=registry.example.com/flink/job-runtime:20260603" \
+  --data-urlencode "args=--env prod" \
+  --data-urlencode "forceBuild=false"
 ```
 
-### 创建镜像内 Jar 任务
-
-`POST /openapi/app/create`
-
-适用于业务 Jar 已经包含在 Flink 运行镜像或任务运行环境中的场景。
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `teamId` | 是 | Team ID |
-| `jobName` | 是 | 任务名称 |
-| `jobType` | 是 | `1` 表示 Jar/custom code |
-| `executionMode` | 是 | 执行模式 |
-| `versionId` | 是 | Flink 版本 ID |
-| `appType` | 是 | Apache Flink 使用 `2` |
-| `resourceFrom` | 是 | 镜像内 Jar 使用 `2` |
-| `jar` | 是 | 镜像内 Jar 名称或路径 |
-| `mainClass` | 是 | 主类 |
-| `dependency` | 否 | 依赖 JSON 字符串 |
-| `dynamicProperties` | 否 | Flink `-D` 参数 |
-| `args` | 否 | 程序参数 |
-
-curl -X POST "${BASE_URL}/openapi/app/create" \
-  -H "Authorization: ${TOKEN}" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "teamId=${TEAM_ID}" \
-  --data-urlencode "jobName=demo-jar-job" \
-  --data-urlencode "jobType=1" \
-  --data-urlencode "executionMode=4" \
-  --data-urlencode "versionId=${VERSION_ID}" \
-  --data-urlencode "appType=2" \
-  --data-urlencode "resourceFrom=2" \
-  --data-urlencode "jar=/opt/flink/usrlib/example-flink-job.jar" \
-  --data-urlencode "mainClass=com.example.flink.DemoJob" \
-  --data-urlencode "args=--env prod --parallelism 2" \
-  --data-urlencode "dynamicProperties=-Dstate.savepoints.dir=hdfs:///streampark/savepoints -Dexecution.checkpointing.interval=60000" \
-  --data-urlencode "options={}" \
-  --data-urlencode "resolveOrder=0" \
-  --data-urlencode "restartSize=3"
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": {
+    "srcJobName": "template-job",
+    "dstJobName": "target-job",
+    "appId": 10086,
+    "state": null,
+    "buildSubmitted": true,
+    "message": "Build submitted."
+  }
+}
 ```
 
-### 更新任务
+### 4. 更新任务
 
 `POST /openapi/app/update`
 
-当前更新接口支持局部更新：服务端会先读取现有任务配置，再只用请求中显式传入的字段覆盖。未传字段保持原值；如果显式传入空字符串，则会覆盖为空，用于清空原配置。
+更新任务的部署覆盖字段。update 不触发构建，不启动任务。
 
-| 参数 | 必填 | 说明 |
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+| `mainClass` | 否 | string | 保留原值 | Jar/custom code 任务主类。 |
+| `flinkSql` | 否 | string | 保留原值 | SQL 内容，提交时使用明文。 |
+| `args` | 否 | string | 保留原值 | Program Args。 |
+| `dynamicProperties` | 否 | string | 保留原值 | Flink `-D` 动态参数。 |
+| `flinkImage` | 否 | string | 保留原值 | Kubernetes Application 模式使用的 Flink base image。 |
+| `k8sPodTemplate` | 否 | string | 保留原值 | Kubernetes 通用 Pod Template YAML。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `jobName` | 否 | 任务名称 |
-| `executionMode` | 否 | 执行模式 |
-| `versionId` | 否 | Flink 版本 ID |
-| `flinkSql` | SQL 任务 | SQL 内容 |
-| `sqlId` | 否 | 当前 SQL 版本 ID；未修改 SQL 时可不传 |
-| `mainClass` | Jar 任务 | 主类 |
-| `args` | 否 | Program Args |
-| `dependency` | 否 | 依赖 JSON 字符串 |
-| `config` | 否 | 配置内容 |
-| `format` | 否 | 配置格式 |
-| `dynamicProperties` | 否 | Flink `-D` 参数 |
-| `k8sPodTemplate` | 否 | Kubernetes 通用 Pod Template YAML |
-| `k8sJmPodTemplate` | 否 | Kubernetes JobManager Pod Template YAML |
-| `k8sTmPodTemplate` | 否 | Kubernetes TaskManager Pod Template YAML |
+| `data` | boolean | 更新成功时为 `true`。 |
+
+**业务逻辑**
+
+服务端根据 `jobName` 解析内部任务 ID，读取当前任务详情，再只合并本次请求中显式出现且位于允许列表的字段。
+
+`argument` 不是 update 的有效别名。更新 Program Args 请使用 `args`。
+
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/update" \
   -H "Authorization: ${TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "jobName=demo-sql-job" \
-  --data-urlencode "executionMode=4" \
-  --data-urlencode "versionId=${VERSION_ID}" \
+  --data-urlencode "jobName=${JOB_NAME}" \
+  --data-urlencode "mainClass=org.example.MainJob" \
   --data-urlencode "flinkSql=CREATE TABLE source_table (id INT) WITH ('connector'='datagen'); CREATE TABLE sink_table (id INT) WITH ('connector'='print'); INSERT INTO sink_table SELECT id FROM source_table;" \
   --data-urlencode "args=--env test --parallelism 2" \
-  --data-urlencode "dynamicProperties=-Dstate.savepoints.dir=hdfs:///streampark/savepoints -Dexecution.checkpointing.interval=30000" \
-  --data-urlencode "k8sPodTemplate=${POD_TEMPLATE_YAML}" \
-  --data-urlencode "k8sJmPodTemplate=${JM_POD_TEMPLATE_YAML}" \
-  --data-urlencode "k8sTmPodTemplate=${TM_POD_TEMPLATE_YAML}" \
-  --data-urlencode "options={}" \
-  --data-urlencode "resolveOrder=0" \
-  --data-urlencode "restartSize=3"
+  --data-urlencode "dynamicProperties=-Dexecution.checkpointing.interval=30000" \
+  --data-urlencode "flinkImage=registry.example.com/flink/job-runtime:20260603" \
+  --data-urlencode "k8sPodTemplate=${POD_TEMPLATE_YAML}"
 ```
 
-等价于控制台内部接口：
-
-```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/app/update'
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": true
+}
 ```
 
-### 构建/发布任务
+### 5. 构建/查询构建状态
 
 `POST /openapi/app/build`
 
-| 参数 | 必填 | 说明 |
+提交构建或查询当前构建状态。调用方可重复调用该接口轮询构建进度。
+
+该接口不做服务端长等待，也没有构建超时参数。每次请求只提交或查询一次状态，调用方需要自行设置轮询间隔和总等待时间。
+
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+| `forceBuild` | 否 | boolean | `false` | 是否显式重新构建。 |
+
+**`forceBuild` 行为**
+
+| 值 | 行为 |
+| --- | --- |
+| `false` | 无当前构建时提交构建；构建中不重复提交；失败时只返回失败状态。 |
+| `true` | 显式重新构建；如果已有构建正在进行，不并发提交第二个构建。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `forceBuild` | 否 | 是否强制构建，默认 `false` |
+| `data.jobName` | string | 任务名称。 |
+| `data.appId` | number | 内部任务 ID。 |
+| `data.buildStatus` | string | `BUILDING`、`COMPLETED` 或 `FAILED`。 |
+| `data.message` | string | 构建状态说明。 |
+
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/build" \
   -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}" \
-  -d "forceBuild=false"
+  --data-urlencode "jobName=${JOB_NAME}" \
+  --data-urlencode "forceBuild=false"
 ```
 
-等价于控制台内部接口：
-
-```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/pipe/build?appId=10079&forceBuild=false&teamId=100000'
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": {
+    "jobName": "target-job",
+    "appId": 10086,
+    "buildStatus": "BUILDING",
+    "message": "Build is running."
+  }
+}
 ```
 
-### 查询构建状态
-
-`POST /openapi/app/build/status`
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `id` | 是 | Flink App ID |
-
-```bash
-curl -X POST "${BASE_URL}/openapi/app/build/status" \
-  -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
-```
-
-### 启动任务
+### 6. 启动任务
 
 `POST /openapi/app/start`
 
-| 参数 | 必填 | 说明 |
+启动任务。可选择从 StreamPark 记录的 latest checkpoint/savepoint 路径恢复。
+
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+| `argument` | 否 | string | 使用任务已保存 `args` | 启动参数，绑定到 `Application.args`。 |
+| `restoreFromLatestCheckpoint` | 否 | boolean | `false` | 是否从 latest checkpoint/savepoint 恢复。 |
+| `allowNonRestored` | 否 | boolean | `false` | 是否允许跳过无法恢复的 state。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `argument` | 否 | 启动参数，绑定到 `args` |
-| `restoreFromSavepoint` | 否 | 是否从 savepoint/checkpoint 恢复 |
-| `savepointPath` | 否 | 指定 savepoint/checkpoint 路径；为空时使用最新记录 |
-| `allowNonRestored` | 否 | 是否允许跳过无法恢复的 state |
+| `data` | boolean | 启动提交成功时为 `true`。 |
 
-普通启动：
+**业务逻辑**
 
-```bash
-curl -X POST "${BASE_URL}/openapi/app/start" \
-  -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
-```
+如果 `restoreFromLatestCheckpoint=true`，服务端读取 latest 路径并设置为启动恢复路径。没有可用 latest 路径时，接口失败并返回 `The application jobName=%s has no available checkpoint, start failed.`。
 
-从指定 savepoint/checkpoint 启动：
+接口返回只表示启动请求已提交，不代表 Flink 作业已经进入 `RUNNING`。
+
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/start" \
   -H "Authorization: ${TOKEN}" \
-  --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "restoreFromSavepoint=true" \
-  --data-urlencode "savepointPath=hdfs:///streampark/savepoints/demo/savepoint-xxxx" \
+  --data-urlencode "jobName=${JOB_NAME}" \
+  --data-urlencode "restoreFromLatestCheckpoint=true" \
   --data-urlencode "allowNonRestored=false"
 ```
 
-等价于控制台内部接口：
-
-```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/app/check_start?id=10074&teamId=100000'
-curl -XPOST 'http://10.32.2.101:31000/flink/app/start?id=10074&restoreOrTriggerSavepoint=true&savepointPath=s3%3A%2F%2Feq-bigdata-cloud-test%2Fflink%2Fcheckpoint%2F481d9457627e70297ac587e41ee58041%2Fchk-10082&allowNonRestored=false&teamId=100000'
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": true
+}
 ```
 
-### 停止任务
+### 7. 停止任务
 
 `POST /openapi/app/cancel`
 
-| 参数 | 必填 | 说明 |
+停止任务。可选择在停止前触发 savepoint。
+
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+| `triggerSavepoint` | 否 | boolean | `false` | 停止前是否触发 savepoint。 |
+| `savepointPath` | 否 | string | 使用任务或 Flink 默认配置 | savepoint 目录，仅 `triggerSavepoint=true` 时生效。 |
+| `drain` | 否 | boolean | `false` | 是否发送 max watermark 后停止。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `triggerSavepoint` | 否 | 停止前是否触发 savepoint |
-| `savepointPath` | 否 | savepoint 目录 |
-| `drain` | 否 | 是否发送 max watermark 后停止 |
+| `status` | string | 成功为 `success`。该接口成功时通常不返回 `data`。 |
 
-普通停止：
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/cancel" \
   -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
-```
-
-停止前触发 savepoint：
-
-```bash
-curl -X POST "${BASE_URL}/openapi/app/cancel" \
-  -H "Authorization: ${TOKEN}" \
-  --data-urlencode "id=${APP_ID}" \
+  --data-urlencode "jobName=${JOB_NAME}" \
   --data-urlencode "triggerSavepoint=true" \
   --data-urlencode "savepointPath=hdfs:///streampark/savepoints" \
   --data-urlencode "drain=false"
 ```
 
-等价于控制台内部接口：
-
-```bash
-curl -XPOST 'http://10.32.2.101:31000/flink/app/cancel?id=10074&restoreOrTriggerSavepoint=false&teamId=100000'
+```json
+{
+  "status": "success",
+  "code": 200
+}
 ```
 
-### 重启任务
+### 8. 重启任务
 
 `POST /openapi/app/restart`
 
-该接口同步执行：先停止任务，等待任务进入可启动状态，再启动任务。调用方应设置足够的 HTTP 超时时间。
+同步执行停止、等待可启动、读取 latest checkpoint/savepoint、重新启动。调用方应设置足够长的 HTTP 超时时间。
 
-| 参数 | 必填 | 说明 |
+**请求参数**
+
+| 参数 | 必填 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `jobName` | 是 | string | 无 | Flink 任务名称，必须唯一定位一个任务。 |
+| `allowNonRestored` | 否 | boolean | `false` | 启动恢复时是否允许跳过无法恢复的 state。 |
+| `drain` | 否 | boolean | `false` | 停止阶段是否发送 max watermark 后停止。 |
+
+**响应字段**
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `triggerSavepoint` | 否 | 重启停止前是否触发 savepoint |
-| `restoreFromSavepoint` | 否 | 重启启动时是否从 savepoint/checkpoint 恢复 |
-| `savepointPath` | 否 | savepoint/checkpoint 路径 |
-| `allowNonRestored` | 否 | 是否允许跳过无法恢复的 state |
-| `drain` | 否 | 停止前是否 drain |
+| `data` | boolean | 重启提交成功时为 `true`。 |
+
+**业务逻辑**
+
+restart 停止阶段强制不触发 savepoint，也不接受调用方传入恢复路径。停止后每 5 秒检查一次任务是否可启动，最长等待时间默认 60 分钟。任务可启动后，服务端读取 latest checkpoint/savepoint 路径并用于启动恢复。
+
+没有 latest 路径时，接口失败并返回 `The application jobName=%s has no available checkpoint, restart failed.`。
+
+该接口要求调用方同时具备 `app:start` 和 `app:cancel` 权限。
+
+**示例**
 
 ```bash
 curl -X POST "${BASE_URL}/openapi/app/restart" \
   -H "Authorization: ${TOKEN}" \
-  --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "triggerSavepoint=true" \
-  --data-urlencode "restoreFromSavepoint=true" \
-  --data-urlencode "savepointPath=hdfs:///streampark/savepoints" \
+  --data-urlencode "jobName=${JOB_NAME}" \
   --data-urlencode "allowNonRestored=false" \
   --data-urlencode "drain=false"
 ```
 
-### 触发 Savepoint
-
-`POST /openapi/app/savepoint/trigger`
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `id` | 是 | Flink App ID |
-| `savepointPath` | 否 | savepoint 目录；为空时按任务配置推断 |
-
-```bash
-curl -X POST "${BASE_URL}/openapi/app/savepoint/trigger" \
-  -H "Authorization: ${TOKEN}" \
-  --data-urlencode "id=${APP_ID}" \
-  --data-urlencode "savepointPath=hdfs:///streampark/savepoints"
-```
-
-### 查询最新 Savepoint/Checkpoint
-
-`POST /openapi/app/savepoint/latest`
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `id` | 是 | Flink App ID |
-
-```bash
-curl -X POST "${BASE_URL}/openapi/app/savepoint/latest" \
-  -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
-```
-
-## 控制台内部辅助接口
-
-以下接口已有或已补齐，但不是全部都带 `@OpenAPI` 注解。使用 API Token 调用时，如果不是 `/openapi/*` 接口，可能会被 OpenAPI 拦截器拒绝；控制台会话或白名单场景可使用。
-
-### SQL 校验
-
-`POST /flink/sql/verify`
-
-```bash
-curl -X POST "${BASE_URL}/flink/sql/verify" \
-  -H "Cookie: SESSION=replace-with-console-session" \
-  --data-urlencode "teamId=${TEAM_ID}" \
-  --data-urlencode "versionId=${VERSION_ID}" \
-  --data-urlencode "sql=CREATE TABLE source_table (id INT) WITH ('connector'='datagen');"
-```
-
-### Savepoint/Checkpoint 历史
-
-`POST /flink/savepoint/history`
-
-```bash
-curl -X POST "${BASE_URL}/flink/savepoint/history" \
-  -H "Cookie: SESSION=replace-with-console-session" \
-  -d "appId=${APP_ID}" \
-  -d "teamId=${TEAM_ID}" \
-  -d "pageNum=1" \
-  -d "pageSize=10"
-```
-
-### 控制台 latest Savepoint/Checkpoint
-
-`POST /flink/savepoint/latest`
-
-```bash
-curl -X POST "${BASE_URL}/flink/savepoint/latest" \
-  -H "Cookie: SESSION=replace-with-console-session" \
-  -d "appId=${APP_ID}" \
-  -d "teamId=${TEAM_ID}"
+```json
+{
+  "status": "success",
+  "code": 200,
+  "data": true
+}
 ```
 
 ## 一键测试脚本示例
@@ -477,42 +545,30 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:10000}"
 TOKEN="${TOKEN:?TOKEN is required}"
-TEAM_ID="${TEAM_ID:-1}"
-VERSION_ID="${VERSION_ID:-1}"
+SRC_JOB_NAME="${SRC_JOB_NAME:?SRC_JOB_NAME is required}"
+JOB_NAME="${JOB_NAME:-automation-sql-demo-$(date +%s)}"
 
-APP_ID=$(curl -s -X POST "${BASE_URL}/openapi/app/create" \
+curl -s -X POST "${BASE_URL}/openapi/app/deploy" \
   -H "Authorization: ${TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "teamId=${TEAM_ID}" \
-  --data-urlencode "jobName=automation-sql-demo-$(date +%s)" \
-  --data-urlencode "jobType=2" \
-  --data-urlencode "executionMode=4" \
-  --data-urlencode "versionId=${VERSION_ID}" \
-  --data-urlencode "appType=1" \
+  --data-urlencode "srcJobName=${SRC_JOB_NAME}" \
+  --data-urlencode "dstJobName=${JOB_NAME}" \
+  --data-urlencode "mainClass=org.example.MainJob" \
   --data-urlencode "flinkSql=CREATE TABLE source_table (id INT) WITH ('connector'='datagen'); CREATE TABLE sink_table (id INT) WITH ('connector'='print'); INSERT INTO sink_table SELECT id FROM source_table;" \
-  --data-urlencode "options={}" \
-  --data-urlencode "resolveOrder=0" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  --data-urlencode "forceBuild=false"
 
-echo "APP_ID=${APP_ID}"
+echo "JOB_NAME=${JOB_NAME}"
 
 curl -s -X POST "${BASE_URL}/openapi/app/build" \
   -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}" \
-  -d "forceBuild=false"
-
-curl -s -X POST "${BASE_URL}/openapi/app/build/status" \
-  -H "Authorization: ${TOKEN}" \
-  -d "id=${APP_ID}"
+  --data-urlencode "jobName=${JOB_NAME}" \
+  --data-urlencode "forceBuild=false"
 ```
 
 ## 注意事项
 
-创建和更新接口当前复用 StreamPark Console 原有 `Application` 参数绑定，参数是表单字段，不是 JSON。
+`/openapi/app/get` 返回完整任务详情，`dynamicProperties` 等字段可能包含对象存储或集群访问配置。不要把完整响应直接打印到外部日志或工单。
 
-更新接口支持局部更新。未传字段保持原值；显式传入空字符串会清空对应字段。
+deploy 已存在目标任务时保持幂等，不会根据本次请求的覆盖字段修改已有任务。如果需要修改已有任务，调用 `/openapi/app/update`。
 
-`build` 成功表示构建流程已提交或不需要构建；实际部署进度建议轮询 `build/status` 和 `app/get`。
-
-`savepointPath` 可以是 savepoint 或 checkpoint 路径。启动时 `restoreFromSavepoint=true` 且不传 `savepointPath`，系统会尝试读取最新记录。
-
-如果直接调用 `/flink/*` 内部接口，需要使用控制台登录态或配置 OpenAPI 白名单。
+构建完成不代表任务已启动。构建完成后需要显式调用 `/openapi/app/start`。

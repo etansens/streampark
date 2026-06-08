@@ -66,6 +66,7 @@ export default defineComponent({
             baseUrl: baseUrl(),
             appId: currentRef.value.app.id,
             teamId: currentRef.value.app.teamId,
+            jobName: currentRef.value.app.jobName,
             name: currentRef.value.name,
           });
           await copy(res);

@@ -68,7 +68,8 @@ public class OpenAPIComponent {
     return schemas.get(name);
   }
 
-  public String getOpenApiCUrl(String name, String baseUrl, Long appId, Long teamId) {
+  public String getOpenApiCUrl(
+      String name, String baseUrl, Long appId, Long teamId, String jobName) {
     OpenAPISchema schema = this.getOpenAPISchema(name);
     if (schema == null) {
       throw new UnsupportedOperationException("Unsupported OpenAPI: " + name);
@@ -93,6 +94,11 @@ public class OpenAPIComponent {
                   curlBuilder.addFormData(c.getName(), appId);
                 } else if (c.getBindFor().equals("teamId")) {
                   curlBuilder.addFormData(c.getName(), teamId);
+                } else if (c.getBindFor().equals("jobName")
+                    || c.getBindFor().equals("srcJobName")) {
+                  curlBuilder.addFormData(c.getName(), jobName);
+                } else if (c.getBindFor().equals("dstJobName")) {
+                  curlBuilder.addFormData(c.getName(), jobName + "-copy");
                 }
               } else {
                 curlBuilder.addFormData(c.getName(), c.getDefaultValue());
