@@ -23,7 +23,6 @@ import javax.annotation.Nonnull
 
 import java.io._
 import java.util.{HashMap => JavaMap, LinkedHashMap => JavaLinkedMap, Properties, Scanner}
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 
 import scala.collection.JavaConversions._
@@ -230,35 +229,7 @@ object PropertiesUtils extends Logger {
 
   def loadFlinkConfYaml(yaml: String): JavaMap[String, String] = {
     require(yaml != null && yaml.nonEmpty, "[StreamPark] loadFlinkConfYaml: yaml must not be null")
-    val flinkConf = new JavaMap[String, String]()
-    val scanner: Scanner = new Scanner(yaml)
-    val lineNo: AtomicInteger = new AtomicInteger(0)
-    while (scanner.hasNextLine) {
-      val line = scanner.nextLine()
-      lineNo.incrementAndGet()
-      // 1. check for comments
-      // [FLINK-27299] flink parsing parameter bug fixed.
-      val comments = line.split("^#|\\s+#", 2)
-      val conf = comments(0).trim
-      // 2. get key and value
-      if (conf.nonEmpty) {
-        val kv = conf.split(": ", 2)
-        // skip line with no valid key-value pair
-        if (kv.length == 2) {
-          val key = kv(0).trim
-          val value = kv(1).trim
-          // sanity check
-          if (key.nonEmpty && value.nonEmpty) {
-            flinkConf += key -> value
-          } else {
-            logWarn(s"Error after splitting key and value in configuration ${lineNo.get()}: $line")
-          }
-        } else {
-          logWarn(s"Error while trying to split key and value in configuration. $lineNo : $line")
-        }
-      }
-    }
-    flinkConf
+    new JavaMap[String, String](fromYamlText(yaml).asJava)
   }
 
   /** extract flink configuration from application.properties */

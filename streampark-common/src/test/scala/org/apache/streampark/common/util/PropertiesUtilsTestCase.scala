@@ -66,4 +66,20 @@ class PropertiesUtilsTestCase {
     Assertions.assertEquals(map("diy.param.name"), "apache streampark")
   }
 
+  @Test def testLoadFlinkConfYamlWithNestedMemoryConfig(): Unit = {
+    val flinkConf =
+      """
+        |taskmanager:
+        |  memory:
+        |    process:
+        |      size: 1600m
+        |taskmanager.numberOfTaskSlots: 1
+        |""".stripMargin
+
+    val map = PropertiesUtils.loadFlinkConfYaml(flinkConf)
+
+    Assertions.assertEquals("1600m", map.get("taskmanager.memory.process.size"))
+    Assertions.assertEquals("1", map.get("taskmanager.numberOfTaskSlots"))
+  }
+
 }

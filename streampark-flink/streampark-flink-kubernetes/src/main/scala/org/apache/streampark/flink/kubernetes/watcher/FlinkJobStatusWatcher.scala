@@ -63,13 +63,15 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
   implicit private val trackTaskExecutor: ExecutionContextExecutorService =
     ExecutionContext.fromExecutorService(watchExecutor)
 
+  private[this] val restEndpointFailures = new ConsecutiveFailureCounter[TrackId](6)
+
   private var timerSchedule: ScheduledFuture[_] = _
 
   /** stop watcher process */
   override def doStart(): Unit = {
     timerSchedule = watchExecutor.scheduleAtFixedRate(
       () => doWatch(),
-      0,
+      FlinkJobStatusWatcher.initialDelaySec(conf),
       conf.requestIntervalSec,
       TimeUnit.SECONDS)
     logInfo("[flink-k8s] FlinkJobStatusWatcher started.")
@@ -124,7 +126,7 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
                   case Some(job) =>
                     updateState(job._1.copy(appId = trackId.appId), job._2)
                   case _ =>
-                    touchSessionJob(trackId) match {
+                    inferState(trackId) match {
                       case Some(state) =>
                         if (FlinkJobState.isEndState(state.jobState)) {
                           // can't find that job in the k8s cluster.
@@ -181,7 +183,7 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
    */
   private def touchSessionAllJob(trackId: TrackId): Map[TrackId, JobStatusCV] = {
     val pollEmitTime = System.currentTimeMillis
-    val jobDetails = listJobsDetails(ClusterKey.of(trackId))
+    val jobDetails = listJobsDetails(trackId)
     jobDetails match {
       case Some(details) if details.jobs.nonEmpty =>
         details.jobs.map {
@@ -190,7 +192,11 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
             val trackItem = trackId.copy(jobId = d.jid, appId = null)
             trackItem -> jobStatus
         }.toMap
-      case None => Map.empty[TrackId, JobStatusCV]
+      case Some(_) => Map.empty[TrackId, JobStatusCV]
+      case None =>
+        markFailedAfterRestEndpointFailures(trackId, pollEmitTime)
+          .map(trackId -> _)
+          .toMap
     }
   }
 
@@ -203,9 +209,10 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
    */
   def touchApplicationJob(@Nonnull trackId: TrackId): Option[JobStatusCV] = {
     implicit val pollEmitTime: Long = System.currentTimeMillis
-    val jobDetails = listJobsDetails(ClusterKey.of(trackId))
+    val jobDetails = listJobsDetails(trackId)
     if (jobDetails.isEmpty || jobDetails.get.jobs.isEmpty) {
-      inferStateFromK8sEvent(trackId)
+      markFailedAfterRestEndpointFailures(trackId, pollEmitTime)
+        .orElse(inferStateFromK8sEvent(trackId))
     } else {
       Some(jobDetails.get.jobs.head.toJobStatusCV(pollEmitTime, System.currentTimeMillis))
     }
@@ -224,6 +231,9 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
 
     if (FlinkJobState.isEndState(jobState.jobState)) {
       trackId.executeMode match {
+        case APPLICATION if jobState.jobState == FlinkJobState.FAILED =>
+          watchController.endpoints.invalidate(trackId.toClusterKey)
+          watchController.unWatching(trackId)
         case APPLICATION =>
           val deployExists = KubernetesRetriever.isDeploymentExists(
             trackId.namespace,
@@ -263,26 +273,50 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
   }
 
   /** list flink jobs details */
-  private def listJobsDetails(clusterKey: ClusterKey): Option[JobDetails] = {
+  private def listJobsDetails(trackId: TrackId): Option[JobDetails] = {
+    val clusterKey = ClusterKey.of(trackId)
     // get flink rest api
-    Try {
-      val clusterRestUrl =
-        watchController.getClusterRestUrl(clusterKey).filter(_.nonEmpty).getOrElse(return None)
-      // list flink jobs from rest api
-      callJobsOverviewsApi(clusterRestUrl)
+    val jobDetails = Try {
+      watchController
+        .getClusterRestUrl(clusterKey)
+        .filter(_.nonEmpty)
+        .flatMap(callJobsOverviewsApi)
     }.getOrElse {
       logger.warn(
         s"Failed to visit ${clusterKey.clusterId} remote flink jobs on kubernetes-native-mode cluster, and the retry access logic is performed.")
-      val clusterRestUrl = watchController.refreshClusterRestUrl(clusterKey).getOrElse(return None)
-      Try(callJobsOverviewsApi(clusterRestUrl)) match {
-        case Success(s) =>
-          logger.info(s"The retry ${clusterKey.clusterId} is successful.")
-          s
-        case Failure(e) =>
-          logger.warn(
-            s"The retry fetch ${clusterKey.clusterId} failed, final status failed, errorStack=${e.getMessage}.")
-          None
+      watchController.refreshClusterRestUrl(clusterKey).flatMap {
+        clusterRestUrl =>
+          Try(callJobsOverviewsApi(clusterRestUrl)) match {
+            case Success(s) =>
+              logger.info(s"The retry ${clusterKey.clusterId} is successful.")
+              s
+            case Failure(e) =>
+              logger.warn(
+                s"The retry fetch ${clusterKey.clusterId} failed, final status failed, errorStack=${e.getMessage}.")
+              None
+          }
       }
+    }
+    if (jobDetails.nonEmpty) {
+      restEndpointFailures.clear(trackId)
+    }
+    jobDetails
+  }
+
+  private[this] def markFailedAfterRestEndpointFailures(
+      trackId: TrackId,
+      pollEmitTime: Long): Option[JobStatusCV] = {
+    if (restEndpointFailures.recordFailure(trackId)) {
+      logError(
+        s"[StreamPark] Could not get the rest endpoint of ${trackId.clusterId} continuously 6 times, mark the task as FAILED.")
+      Some(
+        JobStatusCV(
+          jobState = FlinkJobState.FAILED,
+          jobId = trackId.jobId,
+          pollEmitTime = pollEmitTime,
+          pollAckTime = System.currentTimeMillis))
+    } else {
+      None
     }
   }
 
@@ -314,8 +348,8 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
     )
     val jobState = trackId match {
       case id
-          if watchController.canceling.has(id) || latest.jobState.equals(
-            FlinkJobState.CANCELLING) =>
+          if watchController.canceling.has(id) || Option(latest).exists(
+            _.jobState == FlinkJobState.CANCELLING) =>
         logger.info(s"trackId ${trackId.toString} is canceling")
         if (deployExists) FlinkJobState.CANCELLING else FlinkJobState.CANCELED
       case _ =>
@@ -370,6 +404,9 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
 
 object FlinkJobStatusWatcher {
 
+  private[kubernetes] def initialDelaySec(conf: JobStatusWatcherConfig): Long =
+    conf.requestIntervalSec
+
   /**
    * infer flink job state before persistence.
    *
@@ -396,6 +433,23 @@ object FlinkJobStatusWatcher {
     }
   }
 
+}
+
+final private[kubernetes] class ConsecutiveFailureCounter[K](threshold: Int) {
+
+  require(threshold > 0, "threshold must be greater than 0")
+
+  private[this] val failures = collection.mutable.Map[K, Int]()
+
+  def recordFailure(key: K): Boolean = failures.synchronized {
+    val count = failures.getOrElse(key, 0) + 1
+    failures.put(key, count)
+    count >= threshold
+  }
+
+  def clear(key: K): Unit = failures.synchronized {
+    failures.remove(key)
+  }
 }
 
 private[kubernetes] case class JobDetails(jobs: Array[JobDetail] = Array())
