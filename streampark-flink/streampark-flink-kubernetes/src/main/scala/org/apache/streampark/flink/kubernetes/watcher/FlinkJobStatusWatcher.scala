@@ -193,10 +193,7 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
             trackItem -> jobStatus
         }.toMap
       case Some(_) => Map.empty[TrackId, JobStatusCV]
-      case None =>
-        markFailedAfterRestEndpointFailures(trackId, pollEmitTime)
-          .map(trackId -> _)
-          .toMap
+      case None => Map.empty[TrackId, JobStatusCV]
     }
   }
 
@@ -211,7 +208,9 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
     implicit val pollEmitTime: Long = System.currentTimeMillis
     val jobDetails = listJobsDetails(trackId)
     if (jobDetails.isEmpty || jobDetails.get.jobs.isEmpty) {
-      markFailedAfterRestEndpointFailures(trackId, pollEmitTime)
+      val deploymentExists =
+        KubernetesRetriever.isDeploymentExists(trackId.namespace, trackId.clusterId)
+      markFailedAfterRestEndpointFailures(trackId, pollEmitTime, deploymentExists)
         .orElse(inferStateFromK8sEvent(trackId))
     } else {
       Some(jobDetails.get.jobs.head.toJobStatusCV(pollEmitTime, System.currentTimeMillis))
@@ -231,15 +230,17 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
 
     if (FlinkJobState.isEndState(jobState.jobState)) {
       trackId.executeMode match {
-        case APPLICATION if jobState.jobState == FlinkJobState.FAILED =>
-          watchController.endpoints.invalidate(trackId.toClusterKey)
-          watchController.unWatching(trackId)
         case APPLICATION =>
           val deployExists = KubernetesRetriever.isDeploymentExists(
             trackId.namespace,
             trackId.clusterId
           )
-          if (!deployExists) {
+          if (
+            FlinkJobStatusWatcher.shouldStopWatchingEndState(
+              APPLICATION,
+              jobState.jobState,
+              deployExists)
+          ) {
             watchController.endpoints.invalidate(trackId.toClusterKey)
             watchController.unWatching(trackId)
           }
@@ -305,8 +306,15 @@ class FlinkJobStatusWatcher(conf: JobStatusWatcherConfig = JobStatusWatcherConfi
 
   private[this] def markFailedAfterRestEndpointFailures(
       trackId: TrackId,
-      pollEmitTime: Long): Option[JobStatusCV] = {
-    if (restEndpointFailures.recordFailure(trackId)) {
+      pollEmitTime: Long,
+      deploymentExists: Boolean): Option[JobStatusCV] = {
+    val shouldMarkFailed = FlinkJobStatusWatcher.shouldMarkFailedAfterRestEndpointFailures(
+      trackId.executeMode,
+      deploymentExists)
+    if (!shouldMarkFailed) {
+      restEndpointFailures.clear(trackId)
+      None
+    } else if (restEndpointFailures.recordFailure(trackId)) {
       logError(
         s"[StreamPark] Could not get the rest endpoint of ${trackId.clusterId} continuously 6 times, mark the task as FAILED.")
       Some(
@@ -406,6 +414,21 @@ object FlinkJobStatusWatcher {
 
   private[kubernetes] def initialDelaySec(conf: JobStatusWatcherConfig): Long =
     conf.requestIntervalSec
+
+  private[kubernetes] def shouldMarkFailedAfterRestEndpointFailures(
+      executeMode: FlinkK8sExecuteMode.Value,
+      deploymentExists: Boolean): Boolean =
+    executeMode == APPLICATION && !deploymentExists
+
+  private[kubernetes] def shouldStopWatchingEndState(
+      executeMode: FlinkK8sExecuteMode.Value,
+      jobState: FlinkJobState.Value,
+      deploymentExists: Boolean): Boolean =
+    executeMode match {
+      case APPLICATION => FlinkJobState.isEndState(jobState) && !deploymentExists
+      case SESSION => FlinkJobState.isEndState(jobState)
+      case _ => false
+    }
 
   /**
    * infer flink job state before persistence.

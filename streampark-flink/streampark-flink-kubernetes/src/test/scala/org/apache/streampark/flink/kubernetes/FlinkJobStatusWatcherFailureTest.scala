@@ -17,6 +17,8 @@
 
 package org.apache.streampark.flink.kubernetes
 
+import org.apache.streampark.flink.kubernetes.enums.FlinkJobState
+import org.apache.streampark.flink.kubernetes.enums.FlinkK8sExecuteMode
 import org.apache.streampark.flink.kubernetes.watcher.{ConsecutiveFailureCounter, FlinkJobStatusWatcher}
 
 import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertTrue}
@@ -53,6 +55,40 @@ class FlinkJobStatusWatcherFailureTest {
       silentStateJobKeepTrackingSec = 60)
 
     assertEquals(5, FlinkJobStatusWatcher.initialDelaySec(conf))
+  }
+
+  @Test
+  def doesNotMarkApplicationFailedWhenDeploymentStillExists(): Unit = {
+    assertFalse(
+      FlinkJobStatusWatcher.shouldMarkFailedAfterRestEndpointFailures(
+        FlinkK8sExecuteMode.APPLICATION,
+        deploymentExists = true))
+  }
+
+  @Test
+  def doesNotMarkSessionJobFailedWhenClusterRestEndpointIsUnavailable(): Unit = {
+    assertFalse(
+      FlinkJobStatusWatcher.shouldMarkFailedAfterRestEndpointFailures(
+        FlinkK8sExecuteMode.SESSION,
+        deploymentExists = false))
+  }
+
+  @Test
+  def keepsWatchingFailedApplicationWhenDeploymentStillExists(): Unit = {
+    assertFalse(
+      FlinkJobStatusWatcher.shouldStopWatchingEndState(
+        FlinkK8sExecuteMode.APPLICATION,
+        FlinkJobState.FAILED,
+        deploymentExists = true))
+  }
+
+  @Test
+  def stopsWatchingFailedApplicationWhenDeploymentIsGone(): Unit = {
+    assertTrue(
+      FlinkJobStatusWatcher.shouldStopWatchingEndState(
+        FlinkK8sExecuteMode.APPLICATION,
+        FlinkJobState.FAILED,
+        deploymentExists = false))
   }
 
 }
