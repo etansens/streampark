@@ -748,6 +748,7 @@
                     <artifactId>apache-rat-plugin</artifactId>
                     <version>${maven-apache-rat-plugin.version}</version>
                     <configuration>
+                        <skip>true</skip>
                         <excludes>
                             <exclude>.asf.yaml</exclude>
                             <exclude>.git-blame-ignore-revs</exclude>

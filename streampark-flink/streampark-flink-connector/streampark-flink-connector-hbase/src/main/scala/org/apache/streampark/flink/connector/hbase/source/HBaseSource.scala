@@ -61,7 +61,7 @@ class HBaseSource(
     }
     val jdbc = ConfigUtils.getHBaseConfig(ctx.parameter.toMap)
     if (property != null) {
-      jdbc.putAll(property.asInstanceOf[java.util.Map[_, _]])
+      jdbc.putAll(property)
     }
     val hBaseFunc = new HBaseSourceFunction[R](jdbc, query, func, running)
     ctx.addSource(hBaseFunc)

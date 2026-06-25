@@ -53,7 +53,7 @@ class JdbcSource(
       filter: R => Boolean = null): DataStream[R] = {
     val jdbc = ConfigUtils.getJdbcProperties(ctx.parameter.toMap, alias)
     if (property != null) {
-      jdbc.putAll(property.asInstanceOf[java.util.Map[_, _]])
+      jdbc.putAll(property)
     }
     val mysqlFun = new JdbcSourceFunction[R](jdbc, sqlFun, func, filter)
     ctx.addSource(mysqlFun)
