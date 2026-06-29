@@ -122,6 +122,7 @@
         <enumeratum.version>1.6.1</enumeratum.version>
 
         <maven-compiler-plugin.version>3.10.1</maven-compiler-plugin.version>
+        <maven-toolchains-plugin.version>3.2.0</maven-toolchains-plugin.version>
         <maven-shade-plugin.version>3.2.4</maven-shade-plugin.version>
         <scala-maven-plugin.version>4.7.1</scala-maven-plugin.version>
         <maven-apache-rat-plugin.version>0.13</maven-apache-rat-plugin.version>
@@ -590,6 +591,27 @@
                 <!--maven-->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-toolchains-plugin</artifactId>
+                    <version>${maven-toolchains-plugin.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>toolchain</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                    <configuration>
+                        <toolchains>
+                            <jdk>
+                                <version>${project.build.jdk}</version>
+                                <vendor>openjdk</vendor>
+                            </jdk>
+                        </toolchains>
+                    </configuration>
+                </plugin>
+
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${maven-compiler-plugin.version}</version>
                     <configuration>
@@ -803,6 +825,11 @@
         </pluginManagement>
 
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-toolchains-plugin</artifactId>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
