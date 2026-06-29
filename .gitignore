@@ -43,4 +43,9 @@ hs_err_pid*
 *.rar
 *Spec-output/
 **/node
+node_modules/
 dist/
+
+# Local agent/tool runtime state
+.codegraph/
+.headroom/
