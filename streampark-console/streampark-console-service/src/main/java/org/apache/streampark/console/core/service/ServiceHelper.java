@@ -21,6 +21,7 @@ import org.apache.streampark.console.base.exception.ApiAlertException;
 import org.apache.streampark.console.base.exception.ApiDetailException;
 import org.apache.streampark.console.base.util.WebUtils;
 import org.apache.streampark.console.core.entity.FlinkEnv;
+import org.apache.streampark.console.system.authentication.AuthenticationPrincipal;
 import org.apache.streampark.console.system.authentication.JWTUtil;
 import org.apache.streampark.console.system.entity.User;
 import org.apache.streampark.console.system.service.UserService;
@@ -53,8 +54,7 @@ public class ServiceHelper {
   private String sqlClientJar = null;
 
   public User getLoginUser() {
-    String token = getAuthorization();
-    Long userId = JWTUtil.getUserId(token);
+    Long userId = getPrincipalUserId();
     if (userId == null) {
       throw new AuthenticationException("Unauthorized");
     }
@@ -118,6 +118,21 @@ public class ServiceHelper {
   }
 
   public String getAuthorization() {
-    return (String) SecurityUtils.getSubject().getPrincipal();
+    Object principal = SecurityUtils.getSubject().getPrincipal();
+    if (principal instanceof AuthenticationPrincipal) {
+      return ((AuthenticationPrincipal) principal).getToken();
+    }
+    return (String) principal;
+  }
+
+  private Long getPrincipalUserId() {
+    Object principal = SecurityUtils.getSubject().getPrincipal();
+    if (principal instanceof AuthenticationPrincipal) {
+      return ((AuthenticationPrincipal) principal).getUserId();
+    }
+    if (principal instanceof String) {
+      return JWTUtil.getUserId((String) principal);
+    }
+    return null;
   }
 }

@@ -32,4 +32,6 @@ public interface AccessTokenMapper extends BaseMapper<AccessToken> {
   AccessToken getById(@Param("id") Long id);
 
   AccessToken getByUserId(@Param("userId") Long userId);
+
+  AccessToken getByToken(@Param("token") String token);
 }

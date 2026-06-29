@@ -58,7 +58,7 @@ public class ShiroRealm extends AuthorizingRealm {
    */
   @Override
   protected AuthorizationInfo doGetAuthorizationInfo(PrincipalCollection token) {
-    Long userId = JWTUtil.getUserId(token.toString());
+    Long userId = getUserId(token.getPrimaryPrincipal());
 
     SimpleAuthorizationInfo simpleAuthorizationInfo = new SimpleAuthorizationInfo();
 
@@ -78,14 +78,29 @@ public class ShiroRealm extends AuthorizingRealm {
   @Override
   protected AuthenticationInfo doGetAuthenticationInfo(AuthenticationToken authenticationToken)
       throws AuthenticationException {
-    // The token here is passed from the executeLogin method of JWTFilter and has been decrypted
     String credential = (String) authenticationToken.getCredentials();
+    AuthenticationInfo jwtAuthenticationInfo = authenticateJwtToken(credential);
+    if (jwtAuthenticationInfo != null) {
+      return jwtAuthenticationInfo;
+    }
+
+    return authenticateOpenApiToken(credential);
+  }
+
+  private AuthenticationInfo authenticateJwtToken(String rawToken) {
+    String credential;
+    try {
+      credential = JWTUtil.decrypt(rawToken);
+    } catch (Exception e) {
+      return null;
+    }
+
     String username = JWTUtil.getUserName(credential);
     Long userId = JWTUtil.getUserId(credential);
     AuthenticationType authType = JWTUtil.getAuthType(credential);
 
     if (username == null || userId == null || authType == null) {
-      throw new AuthenticationException("the authorization token is invalid");
+      return null;
     }
 
     // Query user information by username
@@ -128,6 +143,39 @@ public class ShiroRealm extends AuthorizingRealm {
         break;
     }
 
-    return new SimpleAuthenticationInfo(credential, credential, "streampark_shiro_realm");
+    AuthenticationPrincipal principal = new AuthenticationPrincipal(credential, userId, authType);
+    return new SimpleAuthenticationInfo(principal, rawToken, "streampark_shiro_realm");
+  }
+
+  private AuthenticationInfo authenticateOpenApiToken(String token) {
+    AccessToken accessToken = accessTokenService.getByToken(token);
+    if (accessToken == null) {
+      throw new AuthenticationException("the openapi authorization token is invalid");
+    }
+
+    if (AccessToken.STATUS_DISABLE.equals(accessToken.getStatus())) {
+      throw new AuthenticationException(
+          "The OpenAPI authorization token is disabled. Please contact the administrator.");
+    }
+
+    if (User.STATUS_LOCK.equals(accessToken.getUserStatus())) {
+      throw new AuthenticationException(
+          "the user has been locked, please contact the administrator");
+    }
+
+    SecurityUtils.getSubject().getSession().setAttribute(AccessToken.IS_API_TOKEN, true);
+    AuthenticationPrincipal principal =
+        new AuthenticationPrincipal(token, accessToken.getUserId(), AuthenticationType.OPENAPI);
+    return new SimpleAuthenticationInfo(principal, token, "streampark_shiro_realm");
+  }
+
+  private Long getUserId(Object principal) {
+    if (principal instanceof AuthenticationPrincipal) {
+      return ((AuthenticationPrincipal) principal).getUserId();
+    }
+    if (principal instanceof String) {
+      return JWTUtil.getUserId((String) principal);
+    }
+    return null;
   }
 }

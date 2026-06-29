@@ -20,7 +20,6 @@ package org.apache.streampark.console.core.service;
 import org.apache.streampark.console.SpringTestBase;
 import org.apache.streampark.console.base.domain.RestRequest;
 import org.apache.streampark.console.base.domain.RestResponse;
-import org.apache.streampark.console.system.authentication.JWTToken;
 import org.apache.streampark.console.system.authentication.JWTUtil;
 import org.apache.streampark.console.system.entity.AccessToken;
 import org.apache.streampark.console.system.entity.User;
@@ -48,15 +47,13 @@ public class AccessTokenServiceTest extends SpringTestBase {
     // verify
     AccessToken accessToken = (AccessToken) restResponse.get("data");
     LOG.info(accessToken.getToken());
-    JWTToken jwtToken = new JWTToken(JWTUtil.decrypt(accessToken.getToken()));
-
-    LOG.info(jwtToken.getToken());
-    String username = JWTUtil.getUserName(jwtToken.getToken());
-    Assertions.assertNotNull(username);
-    Assertions.assertEquals("admin", username);
-    User user = userService.findByName(username);
+    Assertions.assertThrows(Exception.class, () -> JWTUtil.decrypt(accessToken.getToken()));
+    AccessToken storedAccessToken = accessTokenService.getByToken(accessToken.getToken());
+    Assertions.assertNotNull(storedAccessToken);
+    Assertions.assertEquals(mockUserId, storedAccessToken.getUserId());
+    User user = userService.getById(storedAccessToken.getUserId());
     Assertions.assertNotNull(user);
-    Assertions.assertTrue(JWTUtil.verify(jwtToken.getToken()));
+    Assertions.assertEquals("admin", user.getUsername());
 
     // list
     AccessToken mockToken1 = new AccessToken();

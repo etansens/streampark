@@ -31,7 +31,6 @@ import org.apache.streampark.console.core.service.FlinkClusterService;
 import org.apache.streampark.console.core.service.ProxyService;
 import org.apache.streampark.console.core.service.ServiceHelper;
 import org.apache.streampark.console.core.task.FlinkK8sWatcherWrapper;
-import org.apache.streampark.console.system.authentication.JWTUtil;
 import org.apache.streampark.console.system.entity.Member;
 import org.apache.streampark.console.system.entity.User;
 import org.apache.streampark.console.system.service.MemberService;
@@ -195,17 +194,14 @@ public class ProxyServiceImpl implements ProxyService {
     if (app == null) {
       throw new PermissionDeniedException("Invalid operation, application is invalid.");
     }
-    String token = serviceHelper.getAuthorization();
-    if (token != null) {
-      Long userId = JWTUtil.getUserId(token);
-      if (userId != null && !userId.equals(app.getUserId())) {
-        User user = userService.getById(userId);
-        if (user != null && user.getUserType() != UserType.ADMIN) {
-          Member member = memberService.findByUserId(app.getTeamId(), userId);
-          if (member == null) {
-            throw new PermissionDeniedException(
-                "Permission denied, this job not created by the current user, And the job cannot be found in the current user's team.");
-          }
+    Long userId = serviceHelper.getUserId();
+    if (userId != null && !userId.equals(app.getUserId())) {
+      User user = userService.getById(userId);
+      if (user != null && user.getUserType() != UserType.ADMIN) {
+        Member member = memberService.findByUserId(app.getTeamId(), userId);
+        if (member == null) {
+          throw new PermissionDeniedException(
+              "Permission denied, this job not created by the current user, And the job cannot be found in the current user's team.");
         }
       }
     }

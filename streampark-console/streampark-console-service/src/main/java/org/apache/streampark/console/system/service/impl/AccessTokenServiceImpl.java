@@ -21,8 +21,6 @@ import org.apache.streampark.console.base.domain.ResponseCode;
 import org.apache.streampark.console.base.domain.RestRequest;
 import org.apache.streampark.console.base.domain.RestResponse;
 import org.apache.streampark.console.base.mybatis.pager.MybatisPager;
-import org.apache.streampark.console.core.enums.AuthenticationType;
-import org.apache.streampark.console.system.authentication.JWTUtil;
 import org.apache.streampark.console.system.entity.AccessToken;
 import org.apache.streampark.console.system.entity.User;
 import org.apache.streampark.console.system.mapper.AccessTokenMapper;
@@ -38,6 +36,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 
@@ -46,6 +46,10 @@ import java.util.List;
 @Transactional(propagation = Propagation.SUPPORTS, readOnly = true, rollbackFor = Exception.class)
 public class AccessTokenServiceImpl extends ServiceImpl<AccessTokenMapper, AccessToken>
     implements AccessTokenService {
+
+  private static final int TOKEN_BYTES = 32;
+
+  private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
   @Autowired private UserService userService;
 
@@ -63,9 +67,8 @@ public class AccessTokenServiceImpl extends ServiceImpl<AccessTokenMapper, Acces
           .message(String.format("user %s already has a token", user.getUsername()));
     }
 
-    String token = JWTUtil.sign(user, AuthenticationType.OPENAPI, Long.MAX_VALUE);
     AccessToken accessToken = new AccessToken();
-    accessToken.setToken(token);
+    accessToken.setToken(generateToken());
     accessToken.setUserId(user.getUserId());
     accessToken.setDescription(description);
 
@@ -120,5 +123,16 @@ public class AccessTokenServiceImpl extends ServiceImpl<AccessTokenMapper, Acces
   @Override
   public AccessToken getByUserId(Long userId) {
     return baseMapper.getByUserId(userId);
+  }
+
+  @Override
+  public AccessToken getByToken(String token) {
+    return baseMapper.getByToken(token);
+  }
+
+  private String generateToken() {
+    byte[] bytes = new byte[TOKEN_BYTES];
+    SECURE_RANDOM.nextBytes(bytes);
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
   }
 }

@@ -56,7 +56,6 @@ public class JWTFilter extends BasicHttpAuthenticationFilter {
     HttpServletRequest httpServletRequest = (HttpServletRequest) request;
     String token = httpServletRequest.getHeader(TOKEN);
     try {
-      token = JWTUtil.decrypt(token);
       JWTToken jwtToken = new JWTToken(token);
       getSubject(request, response).login(jwtToken);
       return true;

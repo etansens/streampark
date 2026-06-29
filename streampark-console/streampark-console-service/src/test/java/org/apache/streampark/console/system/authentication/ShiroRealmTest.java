@@ -23,6 +23,7 @@ import org.apache.streampark.console.system.entity.User;
 import org.apache.streampark.console.system.service.AccessTokenService;
 import org.apache.streampark.console.system.service.UserService;
 
+import org.apache.shiro.authc.AuthenticationException;
 import org.apache.shiro.authc.AuthenticationInfo;
 import org.apache.shiro.authc.AuthenticationToken;
 import org.apache.shiro.mgt.DefaultSecurityManager;
@@ -55,6 +56,31 @@ class ShiroRealmTest {
   }
 
   @Test
+  void authenticatesSignTokenWithRawAuthorizationHeader() throws Exception {
+    bindSubject();
+    User user = new User();
+    user.setUserId(100000L);
+    user.setUsername("admin");
+    user.setStatus(User.STATUS_VALID);
+
+    String encryptedToken = JWTUtil.sign(user, AuthenticationType.SIGN, Long.MAX_VALUE);
+    String credential = JWTUtil.decrypt(encryptedToken);
+    AuthenticationToken jwtToken = new JWTToken(encryptedToken);
+
+    when(userService.findByName("admin")).thenReturn(user);
+
+    AuthenticationInfo authenticationInfo =
+        Assertions.assertDoesNotThrow(() -> shiroRealm.authenticate(jwtToken));
+    Assertions.assertDoesNotThrow(() -> shiroRealm.verifyCredentials(jwtToken, authenticationInfo));
+
+    AuthenticationPrincipal principal =
+        (AuthenticationPrincipal) authenticationInfo.getPrincipals().getPrimaryPrincipal();
+    Assertions.assertEquals(100000L, principal.getUserId());
+    Assertions.assertEquals(AuthenticationType.SIGN, principal.getAuthType());
+    Assertions.assertEquals(credential, principal.getToken());
+  }
+
+  @Test
   void authenticatesStoredOpenAPIToken() throws Exception {
     bindSubject();
     User user = new User();
@@ -71,10 +97,41 @@ class ShiroRealmTest {
     when(userService.findByName("admin")).thenReturn(user);
     when(accessTokenService.getByUserId(100000L)).thenReturn(accessToken);
 
+    AuthenticationToken jwtToken = new JWTToken(encryptedToken);
     AuthenticationInfo authenticationInfo =
-        Assertions.assertDoesNotThrow(() -> shiroRealm.authenticate(new JWTToken(credential)));
+        Assertions.assertDoesNotThrow(() -> shiroRealm.authenticate(jwtToken));
+    Assertions.assertDoesNotThrow(() -> shiroRealm.verifyCredentials(jwtToken, authenticationInfo));
 
-    Assertions.assertEquals(credential, authenticationInfo.getPrincipals().getPrimaryPrincipal());
+    AuthenticationPrincipal principal =
+        (AuthenticationPrincipal) authenticationInfo.getPrincipals().getPrimaryPrincipal();
+    Assertions.assertEquals(100000L, principal.getUserId());
+    Assertions.assertEquals(AuthenticationType.OPENAPI, principal.getAuthType());
+    Assertions.assertEquals(credential, principal.getToken());
+  }
+
+  @Test
+  void authenticatesStoredRawOpenAPIToken() {
+    bindSubject();
+    String rawToken = "streampark-api-token";
+
+    AccessToken accessToken = new AccessToken();
+    accessToken.setToken(rawToken);
+    accessToken.setUserId(100000L);
+    accessToken.setStatus(AccessToken.STATUS_ENABLE);
+    accessToken.setUserStatus(User.STATUS_VALID);
+
+    when(accessTokenService.getByToken(rawToken)).thenReturn(accessToken);
+
+    AuthenticationToken jwtToken = new JWTToken(rawToken);
+    AuthenticationInfo authenticationInfo =
+        Assertions.assertDoesNotThrow(() -> shiroRealm.authenticate(jwtToken));
+    Assertions.assertDoesNotThrow(() -> shiroRealm.verifyCredentials(jwtToken, authenticationInfo));
+
+    AuthenticationPrincipal principal =
+        (AuthenticationPrincipal) authenticationInfo.getPrincipals().getPrimaryPrincipal();
+    Assertions.assertEquals(100000L, principal.getUserId());
+    Assertions.assertEquals(AuthenticationType.OPENAPI, principal.getAuthType());
+    Assertions.assertEquals(rawToken, principal.getToken());
   }
 
   private void bindSubject() {
@@ -87,6 +144,11 @@ class ShiroRealmTest {
   private static class TestableShiroRealm extends ShiroRealm {
     AuthenticationInfo authenticate(AuthenticationToken token) {
       return doGetAuthenticationInfo(token);
+    }
+
+    void verifyCredentials(AuthenticationToken token, AuthenticationInfo info)
+        throws AuthenticationException {
+      assertCredentialsMatch(token, info);
     }
   }
 }

@@ -15,26 +15,24 @@
  * limitations under the License.
  */
 
-package org.apache.streampark.console.system.service;
+package org.apache.streampark.console.system.authentication;
 
-import org.apache.streampark.console.base.domain.RestRequest;
-import org.apache.streampark.console.base.domain.RestResponse;
-import org.apache.streampark.console.system.entity.AccessToken;
+import org.apache.streampark.console.core.enums.AuthenticationType;
 
-import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.baomidou.mybatisplus.extension.service.IService;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
 
-public interface AccessTokenService extends IService<AccessToken> {
+import java.io.Serializable;
 
-  RestResponse create(Long userId, String description) throws Exception;
+@Getter
+@AllArgsConstructor
+public class AuthenticationPrincipal implements Serializable {
 
-  boolean delete(Long id);
+  private static final long serialVersionUID = 1L;
 
-  IPage<AccessToken> page(AccessToken tokenParam, RestRequest request);
+  private final String token;
 
-  RestResponse toggle(Long tokenId);
+  private final Long userId;
 
-  AccessToken getByUserId(Long userId);
-
-  AccessToken getByToken(String token);
+  private final AuthenticationType authType;
 }
